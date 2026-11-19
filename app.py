@@ -236,6 +236,38 @@ def tabla_rendimientos(analisis: dict) -> pd.DataFrame:
     ])
 
 
+def tabla_tasas_libres(analisis: dict) -> pd.DataFrame:
+    """Separa intereses en moneda local del efecto de convertir USD a MXN."""
+    sim = analisis['simulacion']
+    capital = analisis['capital']
+    fr_seguro = 1 - analisis['fr_riesgo']
+    spot_inicial = analisis['spot']
+    inicial_eua_mxn = capital * analisis['fr_us'] * fr_seguro
+    inicial_eua_usd = inicial_eua_mxn / spot_inicial
+    inicial_mx_mxn = capital * (1-analisis['fr_us']) * fr_seguro
+    final_eua_usd = float(sim['seguro_eua_usd'][:, -1].mean())
+    final_eua_mxn = float((sim['seguro_eua_usd'][:, -1] * analisis['fx'][:, -1]).mean())
+    final_mx_mxn = float(sim['seguro_mexico_mxn'][:, -1].mean())
+    return pd.DataFrame([
+        {'País': 'EUA · USD', 'Capital inicial seguro (MXN)': inicial_eua_mxn,
+         'Tasa anual media sorteada': float(analisis['rf_us'].mean()),
+         'Tasa anual p05': float(np.quantile(analisis['rf_us'], .05)),
+         'Tasa anual p95': float(np.quantile(analisis['rf_us'], .95)),
+         'Intereses esperados a FX inicial (MXN)': (final_eua_usd-inicial_eua_usd)*spot_inicial,
+         'Saldo final seguro (MXN)': final_eua_mxn,
+         'Rendimiento en moneda local': final_eua_usd/inicial_eua_usd-1 if inicial_eua_usd else np.nan,
+         'Rendimiento en MXN con FX': final_eua_mxn/inicial_eua_mxn-1 if inicial_eua_mxn else np.nan},
+        {'País': 'México · MXN', 'Capital inicial seguro (MXN)': inicial_mx_mxn,
+         'Tasa anual media sorteada': float(analisis['rf_mx'].mean()),
+         'Tasa anual p05': float(np.quantile(analisis['rf_mx'], .05)),
+         'Tasa anual p95': float(np.quantile(analisis['rf_mx'], .95)),
+         'Intereses esperados a FX inicial (MXN)': final_mx_mxn-inicial_mx_mxn,
+         'Saldo final seguro (MXN)': final_mx_mxn,
+         'Rendimiento en moneda local': final_mx_mxn/inicial_mx_mxn-1 if inicial_mx_mxn else np.nan,
+         'Rendimiento en MXN con FX': final_mx_mxn/inicial_mx_mxn-1 if inicial_mx_mxn else np.nan},
+    ])
+
+
 def excel_descargable(analisis: dict) -> bytes:
     b = BytesIO()
     simul = analisis['simulacion']
@@ -246,6 +278,8 @@ def excel_descargable(analisis: dict) -> bytes:
         'México sin hija MXN': simul['mexico'][:, -1],
         'EUA con hija MXN': simul['eua_con_hija'][:, -1],
         'México con hija MXN': simul['mexico_con_hija'][:, -1],
+        'Seguro EUA final USD': simul['seguro_eua_usd'][:, -1],
+        'Seguro México final MXN': simul['seguro_mexico_mxn'][:, -1],
         'Capital final sin cambio FX': simul['capital_sin_fx'][:, -1],
         'Cuenta hija final MXN': simul['hijo'][:, -1],
         'USD/MXN final': analisis['fx'][:, -1], 'Rf EUA anual': analisis['rf_us'],
@@ -267,6 +301,7 @@ def excel_descargable(analisis: dict) -> bytes:
         resumen.to_excel(writer, sheet_name='Resumen')
         tabla_rendimientos(analisis).to_excel(writer, sheet_name='Rendimientos_esperados', index=False)
         tabla_pesos(analisis).to_excel(writer, sheet_name='Pesos', index=False)
+        tabla_tasas_libres(analisis).to_excel(writer, sheet_name='Tasas_libres', index=False)
         escenarios.to_excel(writer, sheet_name='Escenarios', index=False)
         trayectorias.to_excel(writer, sheet_name='Bandas_mensuales', index=False)
         analisis['ganadores_us'].to_excel(writer, sheet_name='Markowitz_EUA', index=False)
@@ -296,6 +331,7 @@ with st.sidebar:
         st.caption('Entradas editables, expresadas como tasas anuales efectivas. Son supuestos; verifica CETES y T-Bills antes de tomar decisiones.')
         rf_us_par = tasa_controls('T-Bills / EUA', 'rf_us', 4.)
         rf_mx_par = tasa_controls('CETES / México', 'rf_mx', 8.)
+        st.caption('Con tasa triangular se sortea una tasa anual nueva para cada corrida Markowitz y otra para cada escenario prospectivo. En un escenario, esa tasa permanece fija durante los 12 meses. La semilla permite repetir los mismos sorteos.')
         st.subheader('Simulación')
         corridas = st.number_input('Corridas Markowitz por país', 10, 1_000, 1_000, step=10)
         carteras = st.number_input('Carteras por corrida', 100, 5_000, 5_000, step=100)
@@ -379,6 +415,32 @@ with resumen:
          'Rendimiento esperado': '{:.2%}'}, na_rep='—'),
         hide_index=True, width='stretch')
     st.caption('EUA y México incluyen los excedentes originados en cada país para calcular su rendimiento sobre la inversión inicial. La hija se muestra aparte: inicia en $0 y su rendimiento se calcula sobre sus aportaciones acumuladas, sin anualizar. Los valores esperados son promedios de los escenarios simulados; EUA ya incluye la conversión USD/MXN.')
+    st.subheader('Rendimiento de la parte en tasa libre de riesgo')
+    tasas_tabla = tabla_tasas_libres(a)
+    lado_rf_us, lado_rf_mx = st.columns(2)
+    for columna, fila in [(lado_rf_us, tasas_tabla.iloc[0]),
+                          (lado_rf_mx, tasas_tabla.iloc[1])]:
+        with columna:
+            st.markdown(f'**{fila["País"]}**')
+            st.metric('Tasa anual media sorteada', f'{fila["Tasa anual media sorteada"]:.2%}')
+            st.metric('Interés esperado de la parte segura',
+                      f'${fila["Intereses esperados a FX inicial (MXN)"]:,.0f} MXN')
+            rendimiento_local = fila['Rendimiento en moneda local']
+            st.caption('Rendimiento de la parte segura en su moneda: '
+                       + (f'{rendimiento_local:.2%}' if pd.notna(rendimiento_local)
+                          else 'sin capital asignado') + '.')
+    with st.expander('Ver tasas sorteadas, saldos y efecto de convertir USD a MXN'):
+        st.dataframe(tasas_tabla.style.format({
+            'Capital inicial seguro (MXN)': '${:,.0f}',
+            'Tasa anual media sorteada': '{:.2%}', 'Tasa anual p05': '{:.2%}',
+            'Tasa anual p95': '{:.2%}',
+            'Intereses esperados a FX inicial (MXN)': '${:,.0f}',
+            'Saldo final seguro (MXN)': '${:,.0f}',
+            'Rendimiento en moneda local': '{:.2%}',
+            'Rendimiento en MXN con FX': '{:.2%}',
+        }, na_rep='—'), hide_index=True, width='stretch')
+    st.caption('Esta tabla corresponde al capital colocado inicialmente en la tasa libre de riesgo de cada país (30% por defecto). En EUA, el interés se gana en USD; la última columna también incorpora el movimiento USD/MXN. Los excedentes de la hija usan las mismas tasas, pero se muestran en la cuenta hija para evitar duplicar intereses.')
+    st.caption('Tasa triangular: cada corrida Markowitz recibe su propio sorteo y cada escenario de 12 meses recibe otro. La tasa de un escenario no cambia de un mes al siguiente. Con tasa fija, todas las corridas y escenarios usan el valor indicado.')
     st.subheader('Riesgo global')
     c1,c2,c3,c4 = st.columns(4)
     c1.metric('Capital mediano final', f'${r["mediana"]:,.0f} MXN')
@@ -400,6 +462,7 @@ with markowitz:
         mejor_us = a['ganadores_us'].loc[a['ganadores_us']['Sharpe máximo'].idxmax()]
         retorno_us = float(mejor_us['Retorno máximo Sharpe'])
         st.metric('Rendimiento esperado de la cartera riesgosa · EUA', f'{(1+retorno_us)**12-1:.2%}')
+        st.metric('Tasa libre EUA · promedio sorteado', f'{a["rf_us"].mean():.2%}')
         st.caption(f'Estimación basada en rendimientos históricos: {retorno_us:.2%} mensual, en USD.')
         st.dataframe(pesos_tabla.loc[pesos_tabla['País']=='EUA'].style.format(
             {'Peso en cartera riesgosa':'{:.1%}', 'Peso en capital del país':'{:.1%}',
@@ -409,6 +472,7 @@ with markowitz:
         mejor_mx = a['ganadores_mx'].loc[a['ganadores_mx']['Sharpe máximo'].idxmax()]
         retorno_mx = float(mejor_mx['Retorno máximo Sharpe'])
         st.metric('Rendimiento esperado de la cartera riesgosa · México', f'{(1+retorno_mx)**12-1:.2%}')
+        st.metric('Tasa libre México · promedio sorteado', f'{a["rf_mx"].mean():.2%}')
         st.caption(f'Estimación basada en rendimientos históricos: {retorno_mx:.2%} mensual, en MXN.')
         st.dataframe(pesos_tabla.loc[pesos_tabla['País']=='México'].style.format(
             {'Peso en cartera riesgosa':'{:.1%}', 'Peso en capital del país':'{:.1%}',
@@ -438,8 +502,14 @@ with trayectorias:
         st.plotly_chart(banda(a['simulacion']['hijo'], a['fecha_base'], 'Cuenta hija de excedentes', 'MXN'), width='stretch')
     con_fx = a['simulacion']['capital'][:, -1]
     sin_fx = a['simulacion']['capital_sin_fx'][:, -1]
-    st.metric('Contribución cambiaria mediana al cierre', f'${np.median(con_fx-sin_fx):,.0f} MXN')
-    st.caption('La contribución cambiaria compara cada escenario con el mismo escenario valuado al dólar inicial. Las bandas se calculan con todas las rutas, no con una muestra de líneas. Si se activa la cuenta hija, el excedente sobre el umbral mensual pasa a la tasa del país correspondiente al cierre de ese mes.')
+    efecto_fx = float(np.median(con_fx-sin_fx))
+    fx1,fx2,fx3 = st.columns(3)
+    fx1.metric('USD/MXN inicial', f'${a["spot"]:.4f}')
+    fx2.metric('USD/MXN final mediano', f'${np.median(a["fx"][:, -1]):.4f}')
+    fx3.metric('Efecto cambiario mediano al cierre',
+               f'{"−" if efecto_fx < 0 else "+"}${abs(efecto_fx):,.0f} MXN')
+    st.caption('Para cada escenario se calcula: capital final con el dólar simulado menos capital final de ese mismo escenario usando el dólar inicial. El indicador es la mediana de esas diferencias, no la diferencia entre dos medianas. Un valor negativo significa que el tipo de cambio redujo el valor en pesos frente al supuesto de dólar constante; no significa que el portafolio completo haya perdido esa cantidad.')
+    st.caption('Las bandas se calculan con todas las rutas, no con una muestra de líneas. Si se activa la cuenta hija, el excedente sobre el umbral mensual pasa a la tasa del país correspondiente al cierre de ese mes.')
 
 with modelo:
     p = a['parametros_fx']
