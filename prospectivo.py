@@ -213,14 +213,26 @@ def simular_portafolio(
     hijo_us = np.zeros(n)
     hijo_mx = np.zeros(n)
     total = np.empty((n, 13)); total_sin_fx = np.empty_like(total)
+    cartera_us_mxn = np.empty_like(total)
+    cartera_mx_mxn = np.empty_like(total)
+    hijo_us_mxn = np.empty_like(total)
+    hijo_mx_mxn = np.empty_like(total)
+    pais_us_total = np.empty_like(total)
+    pais_mx_total = np.empty_like(total)
     hijo_total = np.empty_like(total)
     transferencias = np.zeros((n, 12))
     def guardar(j: int) -> None:
-        usd = activos_us.sum(axis=1) + seguro_us + hijo_us
-        mxn = activos_mx.sum(axis=1) + seguro_mx + hijo_mx
-        total[:, j] = usd * fx[:, j] + mxn
-        total_sin_fx[:, j] = usd * s0 + mxn
-        hijo_total[:, j] = hijo_us * fx[:, j] + hijo_mx
+        usd = activos_us.sum(axis=1) + seguro_us
+        mxn = activos_mx.sum(axis=1) + seguro_mx
+        cartera_us_mxn[:, j] = usd * fx[:, j]
+        cartera_mx_mxn[:, j] = mxn
+        hijo_us_mxn[:, j] = hijo_us * fx[:, j]
+        hijo_mx_mxn[:, j] = hijo_mx
+        hijo_total[:, j] = hijo_us_mxn[:, j] + hijo_mx_mxn[:, j]
+        pais_us_total[:, j] = cartera_us_mxn[:, j] + hijo_us_mxn[:, j]
+        pais_mx_total[:, j] = cartera_mx_mxn[:, j] + hijo_mx_mxn[:, j]
+        total[:, j] = cartera_us_mxn[:, j] + cartera_mx_mxn[:, j] + hijo_total[:, j]
+        total_sin_fx[:, j] = (usd + hijo_us) * s0 + mxn + hijo_mx
     guardar(0)
     historico = retornos[tickers_us + tickers_mx].to_numpy(float)
     rng = np.random.default_rng(semilla)
@@ -249,7 +261,11 @@ def simular_portafolio(
             transferencias[:, j] = trans_us * fx[:, j + 1] + trans_mx
         guardar(j + 1)
     return {'capital': total, 'capital_sin_fx': total_sin_fx,
-            'hijo': hijo_total, 'transferencias': transferencias}
+            'eua': cartera_us_mxn, 'mexico': cartera_mx_mxn,
+            'hijo': hijo_total, 'hijo_eua': hijo_us_mxn,
+            'hijo_mexico': hijo_mx_mxn, 'eua_con_hija': pais_us_total,
+            'mexico_con_hija': pais_mx_total,
+            'transferencias': transferencias}
 
 
 def estadisticas_riesgo(capital_final: np.ndarray, capital_inicial: float) -> dict[str, float]:
@@ -263,3 +279,30 @@ def estadisticas_riesgo(capital_final: np.ndarray, capital_inicial: float) -> di
             'prob_perdida': float(np.mean(x < capital_inicial)),
             'var95': max(0., q95),
             'es95': max(0., float(perdida[perdida >= q95].mean()))}
+
+
+def rendimientos_esperados(simulacion: dict[str, np.ndarray], capital: float,
+                           fraccion_us: float) -> dict[str, float | None]:
+    """Retornos de país incluyen sus excedentes; los saldos graficados no se solapan.
+
+    La hija inicia en cero. Su retorno es saldo final esperado / aportaciones
+    esperadas - 1, sin anualizar; no se divide entre capital inicial cero.
+    """
+    if capital <= 0 or not 0 <= fraccion_us <= 1:
+        raise ValueError('El resumen por país exige capital positivo y participación entre 0 y 1.')
+    us_final = float(simulacion['eua_con_hija'][:, -1].mean())
+    mx_final = float(simulacion['mexico_con_hija'][:, -1].mean())
+    hija_final = float(simulacion['hijo'][:, -1].mean())
+    aportaciones = simulacion['transferencias'].sum(axis=1)
+    con_aportacion = aportaciones > 0
+    aportaciones_esperadas = float(aportaciones.mean())
+    retorno_hija = (hija_final / aportaciones_esperadas - 1
+                    if aportaciones_esperadas > 0 else None)
+    return {'eua_final': us_final, 'mexico_final': mx_final,
+            'global_final': us_final + mx_final, 'hija_final': hija_final,
+            'eua_retorno': us_final / (capital * fraccion_us) - 1 if fraccion_us else None,
+            'mexico_retorno': mx_final / (capital * (1-fraccion_us)) - 1 if fraccion_us < 1 else None,
+            'global_retorno': (us_final + mx_final) / capital - 1,
+            'hija_retorno_aportaciones': retorno_hija,
+            'hija_aportaciones': aportaciones_esperadas,
+            'hija_escenarios_con_aportacion': float(con_aportacion.mean())}

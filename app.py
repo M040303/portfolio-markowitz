@@ -17,7 +17,8 @@ import yfinance as yf
 
 from prospectivo import (
     ajustar_fx_arma_garch, estadisticas_riesgo, optimizar_markowitz,
-    preparar_rendimientos, simular_fx, simular_portafolio, sortear_tasa,
+    preparar_rendimientos, rendimientos_esperados, simular_fx,
+    simular_portafolio, sortear_tasa,
 )
 
 st.set_page_config(page_title='Portafolio internacional | México y EUA', page_icon='🌎', layout='wide')
@@ -64,7 +65,8 @@ def calibrar_cache(precios: pd.Series):
     return ajustar_fx_arma_garch(precios)
 
 
-def trazar_optimizacion(cuadros: list[dict], tabla: pd.DataFrame, titulo: str) -> go.Figure:
+def trazar_optimizacion(cuadros: list[dict], tabla: pd.DataFrame,
+                       titulo: str, fraccion_riesgo: float) -> go.Figure:
     """Nube mensual, máximo actual, mínimos y máximos previos persistentes."""
     def trazas(c):
         anteriores = tabla.iloc[:int(c['corrida']) - 1]
@@ -81,9 +83,10 @@ def trazar_optimizacion(cuadros: list[dict], tabla: pd.DataFrame, titulo: str) -
             go.Scatter(x=[0, c['mejor_vol']], y=[c['rf_mes'], c['mejor_mu']],
                        mode='lines', name='Línea de asignación',
                        line=dict(color='#172D4E', width=2, dash='dash')),
-            go.Scatter(x=[.7 * c['mejor_vol']],
-                       y=[c['rf_mes'] + .7 * (c['mejor_mu'] - c['rf_mes'])],
-                       mode='markers', name='70/30', marker=dict(size=12, color='#E99B2E')),
+            go.Scatter(x=[fraccion_riesgo * c['mejor_vol']],
+                       y=[c['rf_mes'] + fraccion_riesgo * (c['mejor_mu'] - c['rf_mes'])],
+                       mode='markers', name=f'Asignación {fraccion_riesgo:.0%}/{1-fraccion_riesgo:.0%}',
+                       marker=dict(size=12, color='#E99B2E')),
         ]
     xs = np.r_[np.concatenate([c['vol'] for c in cuadros]), tabla['Volatilidad máximo Sharpe']]
     ys = np.r_[np.concatenate([c['mu'] for c in cuadros]), tabla['Retorno máximo Sharpe'],
@@ -123,6 +126,63 @@ def banda(resultados: np.ndarray, inicio: pd.Timestamp, nombre: str, eje: str) -
     return fig
 
 
+def animacion_capital(simulacion: dict[str, np.ndarray], inicio: pd.Timestamp) -> go.Figure:
+    """Capital medio por saldo: los tres componentes suman el total en cada mes."""
+    fechas = [inicio + pd.DateOffset(months=i) for i in range(13)]
+    series = {
+        'EUA · sin hija': simulacion['eua'].mean(axis=0),
+        'México · sin hija': simulacion['mexico'].mean(axis=0),
+        'Hija · ambas monedas': simulacion['hijo'].mean(axis=0),
+        'Capital total': simulacion['capital'].mean(axis=0),
+    }
+    colores = {'EUA · sin hija': '#2874A6', 'México · sin hija': '#16A085',
+               'Hija · ambas monedas': '#D68910', 'Capital total': '#243447'}
+    dominios = [(0, .24), (.26, .49), (.51, .74), (.76, 1)]
+
+    def trazas(mes: int) -> list[go.BaseTraceType]:
+        lineas = [go.Scatter(x=fechas[:mes+1], y=valores[:mes+1],
+                            mode='lines+markers', name=nombre,
+                            line=dict(color=colores[nombre], width=4 if nombre == 'Capital total' else 2.5),
+                            marker=dict(size=8),
+                            hovertemplate='%{x|%b %Y}<br>$%{y:,.0f} MXN<extra>'+nombre+'</extra>')
+                  for nombre, valores in series.items()]
+        indicadores = [go.Indicator(mode='number', value=float(valores[mes]),
+                                   title=dict(text=nombre, font=dict(size=12)),
+                                   number=dict(prefix='$', valueformat=',.0f',
+                                               font=dict(size=21, color=colores[nombre])),
+                                   domain=dict(x=list(dominios[k]), y=[.79, .98]))
+                       for k, (nombre, valores) in enumerate(series.items())]
+        return [*lineas, *indicadores]
+
+    frames = [go.Frame(name=str(i), data=trazas(i),
+                       layout=go.Layout(title=f'Proyección del capital · mes {i} de 12'))
+              for i in range(13)]
+    fig = go.Figure(data=trazas(0), frames=frames)
+    maximo = float(max(np.max(v) for v in series.values()))
+    fig.update_layout(title='Proyección del capital · mes 0 de 12', height=690,
+                      xaxis=dict(title='Mes proyectado', domain=[0, 1],
+                                 range=[fechas[0]-pd.Timedelta(days=8), fechas[-1]+pd.Timedelta(days=8)],
+                                 tickformat='%b %Y'),
+                      yaxis=dict(title='Capital promedio (MXN)', domain=[0, .71],
+                                 range=[-maximo*.04, maximo*1.12], tickformat='$,.0f'),
+                      legend=dict(orientation='h', x=0, y=.76),
+                      margin=dict(t=75, b=100, l=80), hovermode='x unified',
+                      updatemenus=[dict(type='buttons', x=0, y=-.13, buttons=[
+                          dict(label='▶ Reproducir', method='animate',
+                               args=[None, dict(frame=dict(duration=850, redraw=True),
+                                                transition=dict(duration=200), fromcurrent=True)]),
+                          dict(label='⏸ Pausar', method='animate',
+                               args=[[None], dict(frame=dict(duration=0, redraw=False), mode='immediate')]),
+                      ])],
+                      sliders=[dict(x=.22, y=-.13, len=.78,
+                                    currentvalue=dict(prefix='Mes: '),
+                                    steps=[dict(label=str(i), method='animate',
+                                                args=[[str(i)], dict(mode='immediate',
+                                                                     frame=dict(duration=0, redraw=True))])
+                                           for i in range(13)])])
+    return fig
+
+
 def tasa_controls(nombre: str, clave: str, defecto: float):
     modo = st.selectbox(f'{nombre}: método', ['Triangular', 'Fija'], key=f'{clave}_modo')
     if modo == 'Fija':
@@ -139,12 +199,53 @@ def tasa_controls(nombre: str, clave: str, defecto: float):
     return minimo, moda, maximo
 
 
+def tabla_pesos(analisis: dict) -> pd.DataFrame:
+    filas = []
+    for pais, tickers, pesos, fraccion_pais in [
+        ('EUA', analisis['us'], analisis['pesos_us']['sharpe'], analisis['fr_us']),
+        ('México', analisis['mx'], analisis['pesos_mx']['sharpe'], 1-analisis['fr_us']),
+    ]:
+        for ticker, peso in zip(tickers, pesos):
+            filas.append({'País': pais, 'Activo': ticker,
+                          'Peso en cartera riesgosa': peso,
+                          'Peso en capital del país': peso * analisis['fr_riesgo'],
+                          'Peso en capital global': peso * analisis['fr_riesgo'] * fraccion_pais})
+        filas.append({'País': pais, 'Activo': 'Tasa libre de riesgo',
+                      'Peso en cartera riesgosa': np.nan,
+                      'Peso en capital del país': 1-analisis['fr_riesgo'],
+                      'Peso en capital global': (1-analisis['fr_riesgo']) * fraccion_pais})
+    return pd.DataFrame(filas)
+
+
+def tabla_rendimientos(analisis: dict) -> pd.DataFrame:
+    e = analisis['esperados']
+    capital = analisis['capital']
+    return pd.DataFrame([
+        {'Componente': 'EUA · incluyendo su parte de la hija',
+         'Base (MXN)': capital * analisis['fr_us'], 'Final esperado (MXN)': e['eua_final'],
+         'Rendimiento esperado': e['eua_retorno']},
+        {'Componente': 'México · incluyendo su parte de la hija',
+         'Base (MXN)': capital * (1-analisis['fr_us']), 'Final esperado (MXN)': e['mexico_final'],
+         'Rendimiento esperado': e['mexico_retorno']},
+        {'Componente': 'Global', 'Base (MXN)': capital,
+         'Final esperado (MXN)': e['global_final'],
+         'Rendimiento esperado': e['global_retorno']},
+        {'Componente': 'Hija · sobre aportaciones (no anualizado)',
+         'Base (MXN)': e['hija_aportaciones'], 'Final esperado (MXN)': e['hija_final'],
+         'Rendimiento esperado': e['hija_retorno_aportaciones']},
+    ])
+
+
 def excel_descargable(analisis: dict) -> bytes:
     b = BytesIO()
     simul = analisis['simulacion']
     n = len(simul['capital'])
     escenarios = pd.DataFrame({
         'Escenario': np.arange(1, n+1), 'Capital final MXN': simul['capital'][:, -1],
+        'EUA sin hija MXN': simul['eua'][:, -1],
+        'México sin hija MXN': simul['mexico'][:, -1],
+        'EUA con hija MXN': simul['eua_con_hija'][:, -1],
+        'México con hija MXN': simul['mexico_con_hija'][:, -1],
         'Capital final sin cambio FX': simul['capital_sin_fx'][:, -1],
         'Cuenta hija final MXN': simul['hijo'][:, -1],
         'USD/MXN final': analisis['fx'][:, -1], 'Rf EUA anual': analisis['rf_us'],
@@ -154,12 +255,18 @@ def excel_descargable(analisis: dict) -> bytes:
         'Mes': np.arange(13), 'Capital p05': np.quantile(simul['capital'], .05, axis=0),
         'Capital mediano': np.median(simul['capital'], axis=0),
         'Capital p95': np.quantile(simul['capital'], .95, axis=0),
+        'EUA esperado sin hija': simul['eua'].mean(axis=0),
+        'México esperado sin hija': simul['mexico'].mean(axis=0),
+        'Hija esperada': simul['hijo'].mean(axis=0),
+        'Global esperado': simul['capital'].mean(axis=0),
         'USD/MXN p05': np.quantile(analisis['fx'], .05, axis=0),
         'USD/MXN mediano': np.median(analisis['fx'], axis=0),
         'USD/MXN p95': np.quantile(analisis['fx'], .95, axis=0)})
     parametros = pd.DataFrame([vars(analisis['parametros_fx'])]).T.rename(columns={0:'Valor'})
     with pd.ExcelWriter(b, engine='openpyxl') as writer:
         resumen.to_excel(writer, sheet_name='Resumen')
+        tabla_rendimientos(analisis).to_excel(writer, sheet_name='Rendimientos_esperados', index=False)
+        tabla_pesos(analisis).to_excel(writer, sheet_name='Pesos', index=False)
         escenarios.to_excel(writer, sheet_name='Escenarios', index=False)
         trayectorias.to_excel(writer, sheet_name='Bandas_mensuales', index=False)
         analisis['ganadores_us'].to_excel(writer, sheet_name='Markowitz_EUA', index=False)
@@ -234,11 +341,13 @@ if ejecutar:
                                       float(capital), fr_us, fr_riesgo, int(semilla)+8,
                                       umbral if aplicar_hijo else None)
             riesgo = estadisticas_riesgo(simul['capital'][:, -1], float(capital))
+            esperados = rendimientos_esperados(simul, float(capital), fr_us)
         st.session_state['prospectivo'] = dict(us=us, mx=mx, retornos=retornos,
             ganadores_us=gan_us, ganadores_mx=gan_mx, pesos_us=pesos_us,
             pesos_mx=pesos_mx, cuadros_us=cuadros_us, cuadros_mx=cuadros_mx,
             parametros_fx=p_fx, spot=s0, fecha_base=fecha_base, fx=fx,
             rf_us=rf_us, rf_mx=rf_mx, simulacion=simul, riesgo=riesgo,
+            esperados=esperados,
             capital=float(capital), fr_us=fr_us, fr_riesgo=fr_riesgo,
             corridas=int(corridas), carteras=int(carteras), escenarios=int(escenarios),
             umbral=umbral if aplicar_hijo else None)
@@ -251,12 +360,26 @@ if 'prospectivo' not in st.session_state:
 
 a = st.session_state['prospectivo']
 r = a['riesgo']
+e = a['esperados']
 st.success(f'{a["escenarios"]:,} escenarios de inversión · {a["corridas"]:,} corridas × {a["carteras"]:,} carteras por país')
 if a['parametros_fx'].alpha + a['parametros_fx'].beta >= .995:
     st.warning('El GARCH estimado tiene persistencia muy alta. A un año, las bandas pueden ser especialmente sensibles a los parámetros y a los choques extremos.')
 
 resumen, markowitz, trayectorias, modelo, datos = st.tabs(['Decisión', 'Markowitz y línea de capital', 'Escenarios a 12 meses', 'Modelo del dólar', 'Datos y descarga'])
 with resumen:
+    st.subheader('Rendimientos esperados a 12 meses')
+    t1,t2,t3 = st.columns(3)
+    t1.metric('EUA · inversión inicial en MXN',
+              f'{e["eua_retorno"]:.2%}' if e['eua_retorno'] is not None else 'Sin asignación')
+    t2.metric('México · inversión inicial en MXN',
+              f'{e["mexico_retorno"]:.2%}' if e['mexico_retorno'] is not None else 'Sin asignación')
+    t3.metric('Global · inversión inicial en MXN', f'{e["global_retorno"]:.2%}')
+    st.dataframe(tabla_rendimientos(a).style.format(
+        {'Base (MXN)': '${:,.0f}', 'Final esperado (MXN)': '${:,.0f}',
+         'Rendimiento esperado': '{:.2%}'}, na_rep='—'),
+        hide_index=True, width='stretch')
+    st.caption('EUA y México incluyen los excedentes originados en cada país para calcular su rendimiento sobre la inversión inicial. La hija se muestra aparte: inicia en $0 y su rendimiento se calcula sobre sus aportaciones acumuladas, sin anualizar. Los valores esperados son promedios de los escenarios simulados; EUA ya incluye la conversión USD/MXN.')
+    st.subheader('Riesgo global')
     c1,c2,c3,c4 = st.columns(4)
     c1.metric('Capital mediano final', f'${r["mediana"]:,.0f} MXN')
     c2.metric('Prob. de terminar bajo el capital inicial', f'{r["prob_perdida"]:.1%}')
@@ -269,17 +392,44 @@ with resumen:
     st.caption('El VaR mide el percentil 95 de la pérdida respecto del capital inicial; el ES es la pérdida media del 5% peor. Ambas cifras dependen del modelo y son pérdidas al cierre, no necesidades intermedias de liquidez.')
 
 with markowitz:
-    st.write('Los puntos rojos conservan el máximo Sharpe encontrado en corridas previas; el rombo identifica la mínima varianza de la corrida y el punto naranja muestra la combinación 70/30. La tasa cambia entre corridas conforme a su distribución configurada.')
+    st.write('Los puntos rojos conservan el máximo Sharpe encontrado en corridas previas; el rombo identifica la mínima varianza de la corrida y el punto naranja muestra la asignación entre activos y tasa que elegiste. La tasa cambia entre corridas conforme a su distribución configurada.')
+    pesos_tabla = tabla_pesos(a)
     lado_us, lado_mx = st.columns(2)
     with lado_us:
-        st.plotly_chart(trazar_optimizacion(a['cuadros_us'], a['ganadores_us'], 'EUA · USD'), width='stretch')
-        st.dataframe(pd.DataFrame({'Activo':a['us'], 'Peso riesgoso':a['pesos_us']['sharpe']}).style.format({'Peso riesgoso':'{:.1%}'}), hide_index=True, width='stretch')
+        st.plotly_chart(trazar_optimizacion(a['cuadros_us'], a['ganadores_us'], 'EUA · USD', a['fr_riesgo']), width='stretch')
+        mejor_us = a['ganadores_us'].loc[a['ganadores_us']['Sharpe máximo'].idxmax()]
+        retorno_us = float(mejor_us['Retorno máximo Sharpe'])
+        st.metric('Rendimiento esperado de la cartera riesgosa · EUA', f'{(1+retorno_us)**12-1:.2%}')
+        st.caption(f'Estimación basada en rendimientos históricos: {retorno_us:.2%} mensual, en USD.')
+        st.dataframe(pesos_tabla.loc[pesos_tabla['País']=='EUA'].style.format(
+            {'Peso en cartera riesgosa':'{:.1%}', 'Peso en capital del país':'{:.1%}',
+             'Peso en capital global':'{:.1%}'}, na_rep='—'), hide_index=True, width='stretch')
     with lado_mx:
-        st.plotly_chart(trazar_optimizacion(a['cuadros_mx'], a['ganadores_mx'], 'México · MXN'), width='stretch')
-        st.dataframe(pd.DataFrame({'Activo':a['mx'], 'Peso riesgoso':a['pesos_mx']['sharpe']}).style.format({'Peso riesgoso':'{:.1%}'}), hide_index=True, width='stretch')
+        st.plotly_chart(trazar_optimizacion(a['cuadros_mx'], a['ganadores_mx'], 'México · MXN', a['fr_riesgo']), width='stretch')
+        mejor_mx = a['ganadores_mx'].loc[a['ganadores_mx']['Sharpe máximo'].idxmax()]
+        retorno_mx = float(mejor_mx['Retorno máximo Sharpe'])
+        st.metric('Rendimiento esperado de la cartera riesgosa · México', f'{(1+retorno_mx)**12-1:.2%}')
+        st.caption(f'Estimación basada en rendimientos históricos: {retorno_mx:.2%} mensual, en MXN.')
+        st.dataframe(pesos_tabla.loc[pesos_tabla['País']=='México'].style.format(
+            {'Peso en cartera riesgosa':'{:.1%}', 'Peso en capital del país':'{:.1%}',
+             'Peso en capital global':'{:.1%}'}, na_rep='—'), hide_index=True, width='stretch')
+    st.caption('Los pesos de cada activo aparecen dentro de la cartera riesgosa, dentro del capital de su país y respecto al capital global inicial. La fila de tasa libre de riesgo completa el 100% de cada país.')
     st.caption('Cada cartera riesgosa se optimiza en su propia moneda. Las líneas son de asignación de capital (CAL); no se les denomina CML porque las cinco acciones seleccionadas no representan necesariamente al mercado completo.')
 
 with trayectorias:
+    st.subheader('Evolución mensual del capital invertido')
+    st.write('Pulsa **Reproducir** o mueve el control de mes. Las líneas muestran el capital promedio de todos los escenarios en MXN; EUA y México excluyen la hija en esta gráfica para que los tres saldos sumen exactamente el total.')
+    st.plotly_chart(animacion_capital(a['simulacion'], a['fecha_base']), width='stretch')
+    tabla_mensual = pd.DataFrame({
+        'Mes': range(13),
+        'EUA sin hija (MXN)': a['simulacion']['eua'].mean(axis=0),
+        'México sin hija (MXN)': a['simulacion']['mexico'].mean(axis=0),
+        'Hija (MXN)': a['simulacion']['hijo'].mean(axis=0),
+        'Total (MXN)': a['simulacion']['capital'].mean(axis=0),
+    })
+    with st.expander('Ver cifras de cada mes'):
+        st.dataframe(tabla_mensual.style.format({col:'${:,.0f}' for col in tabla_mensual if col != 'Mes'}),
+                     hide_index=True, width='stretch')
     st.plotly_chart(banda(a['fx'], a['fecha_base'], 'USD/MXN proyectado · percentiles 5, 50 y 95', 'MXN por USD'), width='stretch')
     c1,c2 = st.columns(2)
     with c1:

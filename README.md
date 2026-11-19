@@ -22,12 +22,16 @@ En Streamlit Community Cloud, conecta este repositorio y usa `app.py` como archi
 - El USD/MXN se descarga como `MXN=X` de Yahoo Finance. Se reestiman ARMA(2,2) y GARCH(1,1) con innovaciones t sobre rendimientos logarítmicos diarios. Se generan 252 sesiones y se toman 12 puntos equiespaciados como aproximación mensual. **No** se reutiliza el estado de octubre de 2026 del modelo de futuros: el ajuste se actualiza con los datos disponibles en la fecha de valoración.
 - Si se activa la cuenta hija, al final de cada mes se transfiere desde la parte riesgosa el importe que excede el rendimiento umbral (1.5% mensual por defecto); a partir del mes siguiente gana la tasa segura de ese país.
 - Se muestran bandas 5–95%, mediana, probabilidad simulada de pérdida, VaR y ES al 95% en MXN, composición de carteras, puntos de mínima varianza y máximo Sharpe, líneas de asignación de capital y exportación a Excel.
+- El tablero muestra los pesos de cada acción dentro de su cartera riesgosa, del capital de su país y del capital global. También muestra el rendimiento histórico esperado de cada cartera riesgosa y el rendimiento prospectivo esperado de EUA, México y el conjunto.
+- La animación mensual separa el capital promedio en cartera EUA, cartera México y cuenta hija, con el total. Los tres saldos son excluyentes y suman el capital global; el Excel incluye las mismas columnas por mes.
 
 ## Interpretación y límites
 
 La fecha de valoración es el límite de los datos descargados; sólo se usan meses completos anteriores al mes de valoración para el bootstrap bursátil. El último spot disponible inicia la simulación cambiaria. El horizonte de 252 sesiones y sus 12 cortes son una aproximación al año, no un calendario exacto de días hábiles de México y EUA.
 
 El VaR es el percentil 95 de la **pérdida de capital al cierre** y el ES es la pérdida media de la cola peor. No miden necesidades intermedias de liquidez. La independencia entre activos y dólar fue una decisión de simplificación: puede subestimar o sobreestimar riesgo si en la realidad se mueven juntos. Los resultados también son sensibles a la elección de activos, la ventana histórica y la calibración GARCH, especialmente a un año. Se recomienda validar coberturas fuera de muestra y comparar con referencias simples antes de tomar decisiones.
+
+El rendimiento prospectivo esperado es el promedio de los valores finales simulados dividido entre el capital inicial, menos uno. Para EUA y México se incluye la parte de la cuenta hija originada en cada país, aunque en la gráfica animada se separa para no duplicar capital. La hija no tiene capital inicial: su rendimiento mostrado es el saldo final esperado dividido entre las aportaciones esperadas, menos uno, sin anualizar. Las tasas de rendimiento de las dos carteras riesgosas Markowitz se estiman por separado con promedios históricos de sus activos y no son la rentabilidad futura garantizada.
 
 No se incluyen costos, impuestos, deslizamiento, rebalanceo ni coberturas. El resultado es académico y no constituye asesoría financiera.
 
