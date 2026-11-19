@@ -71,6 +71,19 @@ class TestProspectivo(unittest.TestCase):
         x = self.simular(fraccion_riesgo=0., tasa_us=np.full(3,.21),
                          tasa_mx=np.full(3,.10))
         np.testing.assert_allclose(x['capital'][:, -1], 600*1.21+400*1.10)
+        np.testing.assert_allclose(x['seguro_eua_usd'][:, 0], 600/20)
+        np.testing.assert_allclose(x['seguro_eua_usd'][:, -1], (600/20)*1.21)
+        np.testing.assert_allclose(x['seguro_mexico_mxn'][:, 0], 400)
+        np.testing.assert_allclose(x['seguro_mexico_mxn'][:, -1], 400*1.10)
+
+    def test_tasa_usd_se_separa_del_efecto_cambiario(self):
+        fx = self.fx.copy(); fx[:, -1] = 22.
+        x = self.simular(fx=fx, fraccion_riesgo=0.,
+                         tasa_us=np.full(3,.12), tasa_mx=self.ceros)
+        inicial_usd = 600/20
+        np.testing.assert_allclose(x['seguro_eua_usd'][:, -1], inicial_usd*1.12)
+        np.testing.assert_allclose(x['capital'][:, -1], inicial_usd*1.12*22+400)
+        self.assertAlmostEqual((x['seguro_eua_usd'][:, -1].mean()-inicial_usd)*20, 72.)
 
     def test_riesgo_y_tasa(self):
         r = estadisticas_riesgo(np.array([80.,90.,110.,120.]), 100.)

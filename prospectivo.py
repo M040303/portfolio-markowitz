@@ -220,10 +220,14 @@ def simular_portafolio(
     pais_us_total = np.empty_like(total)
     pais_mx_total = np.empty_like(total)
     hijo_total = np.empty_like(total)
+    seguro_us_usd = np.empty_like(total)
+    seguro_mx_mxn = np.empty_like(total)
     transferencias = np.zeros((n, 12))
     def guardar(j: int) -> None:
         usd = activos_us.sum(axis=1) + seguro_us
         mxn = activos_mx.sum(axis=1) + seguro_mx
+        seguro_us_usd[:, j] = seguro_us
+        seguro_mx_mxn[:, j] = seguro_mx
         cartera_us_mxn[:, j] = usd * fx[:, j]
         cartera_mx_mxn[:, j] = mxn
         hijo_us_mxn[:, j] = hijo_us * fx[:, j]
@@ -265,6 +269,8 @@ def simular_portafolio(
             'hijo': hijo_total, 'hijo_eua': hijo_us_mxn,
             'hijo_mexico': hijo_mx_mxn, 'eua_con_hija': pais_us_total,
             'mexico_con_hija': pais_mx_total,
+            'seguro_eua_usd': seguro_us_usd,
+            'seguro_mexico_mxn': seguro_mx_mxn,
             'transferencias': transferencias}
 
 
