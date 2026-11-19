@@ -45,6 +45,17 @@ def preparar_rendimientos(precios: pd.DataFrame, fecha_corte: pd.Timestamp) -> p
     return r
 
 
+def preparar_rendimientos_diarios(precios: pd.DataFrame, fecha_corte: pd.Timestamp) -> pd.DataFrame:
+    """Rendimientos diarios conjuntos disponibles hasta la fecha de valoración."""
+    x = precios.copy().sort_index()
+    x.index = pd.to_datetime(x.index).tz_localize(None)
+    x = x.loc[x.index <= pd.Timestamp(fecha_corte)].dropna()
+    r = x.pct_change(fill_method=None).dropna()
+    if len(r) < 252 or not np.isfinite(r.to_numpy()).all() or (r.to_numpy() <= -1).any():
+        raise ValueError('Se necesitan al menos 252 rendimientos diarios válidos de todos los activos.')
+    return r
+
+
 def optimizar_markowitz(
     retornos: pd.DataFrame,
     rf_anual_referencia: float | np.ndarray,
@@ -184,15 +195,16 @@ def simular_portafolio(
     fraccion_us: float, fraccion_riesgo: float, semilla: int,
     umbral_excedente: float | None = 0.015,
 ) -> dict[str, np.ndarray]:
-    """Compra inicial y conservación de posiciones durante 12 meses.
+    """Compra inicial y conservación de posiciones durante 252 sesiones.
 
     El bootstrap conjunto conserva correlación histórica entre los diez activos.
     Las rutas cambiarias se generan aparte. Si hay excedente, se transfiere al
-    cierre de cada mes y devenga tasa segura desde el mes siguiente.
+    cierre de cada bloque de 21 sesiones y devenga tasa segura desde el día siguiente.
     """
     n = len(fx)
-    if fx.shape[1] != 13 or len(tasa_us) != n or len(tasa_mx) != n:
-        raise ValueError('Se requieren 12 meses de FX y una tasa por escenario.')
+    dias = 252
+    if fx.shape[1] != dias + 1 or len(tasa_us) != n or len(tasa_mx) != n:
+        raise ValueError('Se requieren 252 sesiones de FX y una tasa por escenario.')
     if capital_mxn <= 0 or not 0 <= fraccion_us <= 1 or not 0 <= fraccion_riesgo <= 1:
         raise ValueError('Capital y asignaciones iniciales inválidos.')
     if umbral_excedente is not None and not 0 <= umbral_excedente < 1:
@@ -212,7 +224,7 @@ def simular_portafolio(
     seguro_mx = np.full(n, mx_inicial_mxn * (1 - fraccion_riesgo))
     hijo_us = np.zeros(n)
     hijo_mx = np.zeros(n)
-    total = np.empty((n, 13)); total_sin_fx = np.empty_like(total)
+    total = np.empty((n, dias + 1)); total_sin_fx = np.empty_like(total)
     cartera_us_mxn = np.empty_like(total)
     cartera_mx_mxn = np.empty_like(total)
     hijo_us_mxn = np.empty_like(total)
@@ -240,20 +252,20 @@ def simular_portafolio(
     guardar(0)
     historico = retornos[tickers_us + tickers_mx].to_numpy(float)
     rng = np.random.default_rng(semilla)
-    indices = rng.integers(0, len(historico), size=(n, 12))
-    tasa_mes_us = (1 + tasa_us) ** (1 / 12) - 1
-    tasa_mes_mx = (1 + tasa_mx) ** (1 / 12) - 1
-    for j in range(12):
-        r = historico[indices[:, j]]
-        previo_us = activos_us.sum(axis=1)
-        previo_mx = activos_mx.sum(axis=1)
+    tasa_dia_us = (1 + tasa_us) ** (1 / dias) - 1
+    tasa_dia_mx = (1 + tasa_mx) ** (1 / dias) - 1
+    previo_us = activos_us.sum(axis=1)
+    previo_mx = activos_mx.sum(axis=1)
+    for j in range(1, dias + 1):
+        # Un mismo día histórico para los diez activos conserva su dependencia.
+        r = historico[rng.integers(0, len(historico), size=n)]
         activos_us *= 1 + r[:, :len(tickers_us)]
         activos_mx *= 1 + r[:, len(tickers_us):]
-        seguro_us *= 1 + tasa_mes_us
-        seguro_mx *= 1 + tasa_mes_mx
-        hijo_us *= 1 + tasa_mes_us
-        hijo_mx *= 1 + tasa_mes_mx
-        if umbral_excedente is not None:
+        seguro_us *= 1 + tasa_dia_us
+        seguro_mx *= 1 + tasa_dia_mx
+        hijo_us *= 1 + tasa_dia_us
+        hijo_mx *= 1 + tasa_dia_mx
+        if umbral_excedente is not None and j % 21 == 0:
             valor_us = activos_us.sum(axis=1)
             valor_mx = activos_mx.sum(axis=1)
             trans_us = np.maximum(valor_us - previo_us * (1 + umbral_excedente), 0)
@@ -262,8 +274,11 @@ def simular_portafolio(
             activos_mx *= np.divide(valor_mx - trans_mx, valor_mx, out=np.ones(n), where=valor_mx > 0)[:, None]
             hijo_us += trans_us
             hijo_mx += trans_mx
-            transferencias[:, j] = trans_us * fx[:, j + 1] + trans_mx
-        guardar(j + 1)
+            transferencias[:, j // 21 - 1] = trans_us * fx[:, j] + trans_mx
+        if j % 21 == 0:
+            previo_us = activos_us.sum(axis=1)
+            previo_mx = activos_mx.sum(axis=1)
+        guardar(j)
     return {'capital': total, 'capital_sin_fx': total_sin_fx,
             'eua': cartera_us_mxn, 'mexico': cartera_mx_mxn,
             'hijo': hijo_total, 'hijo_eua': hijo_us_mxn,

@@ -17,7 +17,7 @@ import yfinance as yf
 
 from prospectivo import (
     ajustar_fx_arma_garch, estadisticas_riesgo, optimizar_markowitz,
-    preparar_rendimientos, rendimientos_esperados, simular_fx,
+    preparar_rendimientos, preparar_rendimientos_diarios, rendimientos_esperados, simular_fx,
     simular_portafolio, sortear_tasa,
 )
 
@@ -114,21 +114,22 @@ def trazar_optimizacion(cuadros: list[dict], tabla: pd.DataFrame,
 
 def banda(resultados: np.ndarray, inicio: pd.Timestamp, nombre: str, eje: str) -> go.Figure:
     q = np.quantile(resultados, [.05, .5, .95], axis=0)
-    fechas = [inicio + pd.DateOffset(months=i) for i in range(resultados.shape[1])]
+    fechas = pd.bdate_range(inicio, periods=resultados.shape[1]) if resultados.shape[1] == 253 else [inicio + pd.DateOffset(months=i) for i in range(resultados.shape[1])]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=fechas, y=q[2], mode='lines', line=dict(width=0), showlegend=False))
     fig.add_trace(go.Scatter(x=fechas, y=q[0], mode='lines', fill='tonexty',
                              fillcolor='rgba(41,105,163,.18)', line=dict(width=0), name='Banda 5–95%'))
     fig.add_trace(go.Scatter(x=fechas, y=q[1], mode='lines+markers',
                              line=dict(color='#174A77', width=3), name='Mediana'))
-    fig.update_layout(title=nombre, xaxis_title='Mes proyectado', yaxis_title=eje,
+    fig.update_layout(title=nombre, xaxis_title='Sesión proyectada', yaxis_title=eje,
                       height=430, hovermode='x unified')
     return fig
 
 
 def animacion_capital(simulacion: dict[str, np.ndarray], inicio: pd.Timestamp) -> go.Figure:
-    """Capital medio por saldo: los tres componentes suman el total en cada mes."""
-    fechas = [inicio + pd.DateOffset(months=i) for i in range(13)]
+    """Capital medio diario: los tres componentes suman el total cada sesión."""
+    dias = simulacion['capital'].shape[1] - 1
+    fechas = pd.bdate_range(inicio, periods=dias + 1)
     series = {
         'EUA · sin hija': simulacion['eua'].mean(axis=0),
         'México · sin hija': simulacion['mexico'].mean(axis=0),
@@ -139,14 +140,14 @@ def animacion_capital(simulacion: dict[str, np.ndarray], inicio: pd.Timestamp) -
                'Hija · ambas monedas': '#D68910', 'Capital total': '#243447'}
     dominios = [(0, .24), (.26, .49), (.51, .74), (.76, 1)]
 
-    def trazas(mes: int) -> list[go.BaseTraceType]:
-        lineas = [go.Scatter(x=fechas[:mes+1], y=valores[:mes+1],
+    def trazas(dia: int) -> list[go.BaseTraceType]:
+        lineas = [go.Scatter(x=fechas[:dia+1], y=valores[:dia+1],
                             mode='lines+markers', name=nombre,
                             line=dict(color=colores[nombre], width=4 if nombre == 'Capital total' else 2.5),
                             marker=dict(size=8),
-                            hovertemplate='%{x|%b %Y}<br>$%{y:,.0f} MXN<extra>'+nombre+'</extra>')
+                            hovertemplate='%{x|%d %b %Y}<br>$%{y:,.0f} MXN<extra>'+nombre+'</extra>')
                   for nombre, valores in series.items()]
-        indicadores = [go.Indicator(mode='number', value=float(valores[mes]),
+        indicadores = [go.Indicator(mode='number', value=float(valores[dia]),
                                    title=dict(text=nombre, font=dict(size=12)),
                                    number=dict(prefix='$', valueformat=',.0f',
                                                font=dict(size=21, color=colores[nombre])),
@@ -155,12 +156,12 @@ def animacion_capital(simulacion: dict[str, np.ndarray], inicio: pd.Timestamp) -
         return [*lineas, *indicadores]
 
     frames = [go.Frame(name=str(i), data=trazas(i),
-                       layout=go.Layout(title=f'Proyección del capital · mes {i} de 12'))
-              for i in range(13)]
+                       layout=go.Layout(title=f'Proyección del capital · sesión {i} de {dias}'))
+              for i in range(dias + 1)]
     fig = go.Figure(data=trazas(0), frames=frames)
     maximo = float(max(np.max(v) for v in series.values()))
-    fig.update_layout(title='Proyección del capital · mes 0 de 12', height=690,
-                      xaxis=dict(title='Mes proyectado', domain=[0, 1],
+    fig.update_layout(title=f'Proyección del capital · sesión 0 de {dias}', height=690,
+                      xaxis=dict(title='Fecha proyectada (días hábiles)', domain=[0, 1],
                                  range=[fechas[0]-pd.Timedelta(days=8), fechas[-1]+pd.Timedelta(days=8)],
                                  tickformat='%b %Y'),
                       yaxis=dict(title='Capital promedio (MXN)', domain=[0, .71],
@@ -169,17 +170,17 @@ def animacion_capital(simulacion: dict[str, np.ndarray], inicio: pd.Timestamp) -
                       margin=dict(t=75, b=100, l=80), hovermode='x unified',
                       updatemenus=[dict(type='buttons', x=0, y=-.13, buttons=[
                           dict(label='▶ Reproducir', method='animate',
-                               args=[None, dict(frame=dict(duration=850, redraw=True),
-                                                transition=dict(duration=200), fromcurrent=True)]),
+                               args=[None, dict(frame=dict(duration=90, redraw=True),
+                                                transition=dict(duration=0), fromcurrent=True)]),
                           dict(label='⏸ Pausar', method='animate',
                                args=[[None], dict(frame=dict(duration=0, redraw=False), mode='immediate')]),
                       ])],
                       sliders=[dict(x=.22, y=-.13, len=.78,
-                                    currentvalue=dict(prefix='Mes: '),
-                                    steps=[dict(label=str(i), method='animate',
+                                    currentvalue=dict(prefix='Sesión: '),
+                                    steps=[dict(label=str(i) if i % 21 == 0 or i == dias else '', method='animate',
                                                 args=[[str(i)], dict(mode='immediate',
                                                                      frame=dict(duration=0, redraw=True))])
-                                           for i in range(13)])])
+                                           for i in range(dias + 1)])])
     return fig
 
 
@@ -286,7 +287,7 @@ def excel_descargable(analisis: dict) -> bytes:
         'Rf México anual': analisis['rf_mx']})
     resumen = pd.DataFrame([analisis['riesgo']]).T.rename(columns={0:'Valor'})
     trayectorias = pd.DataFrame({
-        'Mes': np.arange(13), 'Capital p05': np.quantile(simul['capital'], .05, axis=0),
+        'Sesión': np.arange(253), 'Fecha aproximada': pd.bdate_range(analisis['fecha_base'], periods=253), 'Capital p05': np.quantile(simul['capital'], .05, axis=0),
         'Capital mediano': np.median(simul['capital'], axis=0),
         'Capital p95': np.quantile(simul['capital'], .95, axis=0),
         'EUA esperado sin hija': simul['eua'].mean(axis=0),
@@ -303,7 +304,7 @@ def excel_descargable(analisis: dict) -> bytes:
         tabla_pesos(analisis).to_excel(writer, sheet_name='Pesos', index=False)
         tabla_tasas_libres(analisis).to_excel(writer, sheet_name='Tasas_libres', index=False)
         escenarios.to_excel(writer, sheet_name='Escenarios', index=False)
-        trayectorias.to_excel(writer, sheet_name='Bandas_mensuales', index=False)
+        trayectorias.to_excel(writer, sheet_name='Bandas_diarias', index=False)
         analisis['ganadores_us'].to_excel(writer, sheet_name='Markowitz_EUA', index=False)
         analisis['ganadores_mx'].to_excel(writer, sheet_name='Markowitz_Mexico', index=False)
         parametros.to_excel(writer, sheet_name='Modelo_USDMXN')
@@ -331,7 +332,7 @@ with st.sidebar:
         st.caption('Entradas editables, expresadas como tasas anuales efectivas. Son supuestos; verifica CETES y T-Bills antes de tomar decisiones.')
         rf_us_par = tasa_controls('T-Bills / EUA', 'rf_us', 4.)
         rf_mx_par = tasa_controls('CETES / México', 'rf_mx', 8.)
-        st.caption('Con tasa triangular se sortea una tasa anual nueva para cada corrida Markowitz y otra para cada escenario prospectivo. En un escenario, esa tasa permanece fija durante los 12 meses. La semilla permite repetir los mismos sorteos.')
+        st.caption('Con tasa triangular se sortea una tasa anual nueva para cada corrida Markowitz y otra para cada escenario prospectivo. En un escenario, esa tasa permanece fija durante las 252 sesiones. La semilla permite repetir los mismos sorteos.')
         st.subheader('Simulación')
         corridas = st.number_input('Corridas Markowitz por país', 10, 1_000, 1_000, step=10)
         carteras = st.number_input('Carteras por corrida', 100, 5_000, 5_000, step=100)
@@ -358,6 +359,7 @@ if ejecutar:
             precios = descargar_precios(todos, inicio, corte)
             fx_historico = descargar_dolar(inicio, corte)
             retornos = preparar_rendimientos(precios, pd.Timestamp(corte))
+            retornos_diarios = preparar_rendimientos_diarios(precios, pd.Timestamp(corte))
             if len(fx_historico) < 252:
                 raise ValueError('Se necesitan al menos 252 precios diarios del dólar.')
             p_fx = calibrar_cache(fx_historico)
@@ -369,10 +371,10 @@ if ejecutar:
             gan_us, pesos_us, cuadros_us = optimizar_markowitz(retornos[list(us)], t_opt_us, int(corridas), int(carteras), int(semilla)+3)
             gan_mx, pesos_mx, cuadros_mx = optimizar_markowitz(retornos[list(mx)], t_opt_mx, int(corridas), int(carteras), int(semilla)+4)
             fx_diario = simular_fx(s0, p_fx, int(escenarios), 252, int(semilla)+5)
-            fx = fx_diario[:, np.rint(np.linspace(0, 252, 13)).astype(int)]
+            fx = fx_diario
             rf_us = sortear_tasa(int(escenarios), *rf_us_par, int(semilla)+6)
             rf_mx = sortear_tasa(int(escenarios), *rf_mx_par, int(semilla)+7)
-            simul = simular_portafolio(retornos, pesos_us['sharpe'], pesos_mx['sharpe'],
+            simul = simular_portafolio(retornos_diarios, pesos_us['sharpe'], pesos_mx['sharpe'],
                                       list(us), list(mx), fx, rf_us, rf_mx,
                                       float(capital), fr_us, fr_riesgo, int(semilla)+8,
                                       umbral if aplicar_hijo else None)
@@ -440,7 +442,7 @@ with resumen:
             'Rendimiento en MXN con FX': '{:.2%}',
         }, na_rep='—'), hide_index=True, width='stretch')
     st.caption('Esta tabla corresponde al capital colocado inicialmente en la tasa libre de riesgo de cada país (30% por defecto). En EUA, el interés se gana en USD; la última columna también incorpora el movimiento USD/MXN. Los excedentes de la hija usan las mismas tasas, pero se muestran en la cuenta hija para evitar duplicar intereses.')
-    st.caption('Tasa triangular: cada corrida Markowitz recibe su propio sorteo y cada escenario de 12 meses recibe otro. La tasa de un escenario no cambia de un mes al siguiente. Con tasa fija, todas las corridas y escenarios usan el valor indicado.')
+    st.caption('Tasa triangular: cada corrida Markowitz recibe su propio sorteo y cada escenario de 252 sesiones recibe otro. La tasa de un escenario permanece fija durante toda la ruta. Con tasa fija, todas las corridas y escenarios usan el valor indicado.')
     st.subheader('Riesgo global')
     c1,c2,c3,c4 = st.columns(4)
     c1.metric('Capital mediano final', f'${r["mediana"]:,.0f} MXN')
@@ -481,18 +483,19 @@ with markowitz:
     st.caption('Cada cartera riesgosa se optimiza en su propia moneda. Las líneas son de asignación de capital (CAL); no se les denomina CML porque las cinco acciones seleccionadas no representan necesariamente al mercado completo.')
 
 with trayectorias:
-    st.subheader('Evolución mensual del capital invertido')
-    st.write('Pulsa **Reproducir** o mueve el control de mes. Las líneas muestran el capital promedio de todos los escenarios en MXN; EUA y México excluyen la hija en esta gráfica para que los tres saldos sumen exactamente el total.')
+    st.subheader('Evolución diaria del capital invertido')
+    st.write('Pulsa **Reproducir** o mueve el control de sesión. Las líneas muestran el capital promedio de todos los escenarios en MXN; EUA y México excluyen la hija en esta gráfica para que los tres saldos sumen exactamente el total.')
     st.plotly_chart(animacion_capital(a['simulacion'], a['fecha_base']), width='stretch')
     tabla_mensual = pd.DataFrame({
-        'Mes': range(13),
+        'Sesión': range(253),
+        'Fecha aproximada': pd.bdate_range(a['fecha_base'], periods=253),
         'EUA sin hija (MXN)': a['simulacion']['eua'].mean(axis=0),
         'México sin hija (MXN)': a['simulacion']['mexico'].mean(axis=0),
         'Hija (MXN)': a['simulacion']['hijo'].mean(axis=0),
         'Total (MXN)': a['simulacion']['capital'].mean(axis=0),
     })
-    with st.expander('Ver cifras de cada mes'):
-        st.dataframe(tabla_mensual.style.format({col:'${:,.0f}' for col in tabla_mensual if col != 'Mes'}),
+    with st.expander('Ver cifras de cada sesión'):
+        st.dataframe(tabla_mensual.style.format({col:'${:,.0f}' for col in tabla_mensual if col not in ('Sesión', 'Fecha aproximada')}),
                      hide_index=True, width='stretch')
     st.plotly_chart(banda(a['fx'], a['fecha_base'], 'USD/MXN proyectado · percentiles 5, 50 y 95', 'MXN por USD'), width='stretch')
     c1,c2 = st.columns(2)
@@ -509,7 +512,7 @@ with trayectorias:
     fx3.metric('Efecto cambiario mediano al cierre',
                f'{"−" if efecto_fx < 0 else "+"}${abs(efecto_fx):,.0f} MXN')
     st.caption('Para cada escenario se calcula: capital final con el dólar simulado menos capital final de ese mismo escenario usando el dólar inicial. El indicador es la mediana de esas diferencias, no la diferencia entre dos medianas. Un valor negativo significa que el tipo de cambio redujo el valor en pesos frente al supuesto de dólar constante; no significa que el portafolio completo haya perdido esa cantidad.')
-    st.caption('Las bandas se calculan con todas las rutas, no con una muestra de líneas. Si se activa la cuenta hija, el excedente sobre el umbral mensual pasa a la tasa del país correspondiente al cierre de ese mes.')
+    st.caption('Las bandas se calculan con todas las rutas, no con una muestra de líneas. Las fechas son días hábiles aproximados; pueden incluir festivos bursátiles. Si se activa la cuenta hija, el excedente sobre el umbral mensual se traspasa al cierre de cada bloque de 21 sesiones.')
 
 with modelo:
     p = a['parametros_fx']
@@ -517,7 +520,7 @@ with modelo:
     c1.metric('Último USD/MXN observado', f'${a["spot"]:.4f}')
     c2.metric('Fecha del ajuste', p.fecha_ajuste)
     c3.metric('Persistencia GARCH', f'{p.alpha+p.beta:.4f}')
-    st.write('Se ajusta ARMA(2,2) a rendimientos logarítmicos diarios y GARCH(1,1) con innovaciones t a sus residuos. Después se simulan 252 sesiones y se toman 12 cortes mensuales. El ajuste se recalcula con los precios disponibles al ejecutar la app; los parámetros de octubre de 2026 del ejercicio de futuros no se arrastran a una fecha nueva.')
+    st.write('Se ajusta ARMA(2,2) a rendimientos logarítmicos diarios y GARCH(1,1) con innovaciones t a sus residuos. Se simulan 252 sesiones diarias de dólar y activos. El ajuste se recalcula con los precios disponibles al ejecutar la app; los parámetros de octubre de 2026 del ejercicio de futuros no se arrastran a una fecha nueva.')
     tabla_parametros = pd.DataFrame({
         'Parámetro': list(vars(p)),
         'Estimación': [f'{v:.6g}' if isinstance(v, float) else str(v)

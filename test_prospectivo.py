@@ -13,7 +13,7 @@ class TestProspectivo(unittest.TestCase):
         self.r = pd.DataFrame(np.zeros((30,4)), columns=self.columnas)
         self.pus = np.array([.5,.5])
         self.pmx = np.array([.5,.5])
-        self.fx = np.full((3,13),20.)
+        self.fx = np.full((3,253),20.)
         self.ceros = np.zeros(3)
 
     def simular(self, **kwargs):
@@ -42,14 +42,15 @@ class TestProspectivo(unittest.TestCase):
         y = self.simular(retornos=r, umbral_excedente=None)
         # La transferencia conserva el patrimonio del primer mes, pero
         # cambia la composición y por ello reduce el crecimiento posterior.
-        np.testing.assert_allclose(x['capital'][:, 1], y['capital'][:, 1])
+        np.testing.assert_allclose(x['capital'][:, 21], y['capital'][:, 21])
+        np.testing.assert_allclose(x['hijo'][:, :21], 0.)
         self.assertTrue(np.all(x['capital'][:, -1] < y['capital'][:, -1]))
         self.assertTrue(np.all(x['hijo'][:, -1] > 0))
         self.assertTrue(np.all(x['transferencias'] > 0))
 
-    def test_desglose_concilia_en_cada_mes_y_escenario(self):
+    def test_desglose_concilia_en_cada_dia_y_escenario(self):
         r = self.r.copy(); r.iloc[:, :2] = .03; r.iloc[:, 2:] = -.01
-        fx = self.fx.copy(); fx[:, 1:] = np.linspace(19., 23., 12)
+        fx = self.fx.copy(); fx[:, 1:] = np.linspace(19., 23., 252)
         x = self.simular(retornos=r, fx=fx,
                          tasa_us=np.full(3, .04), tasa_mx=np.full(3, .08))
         np.testing.assert_allclose(x['eua'] + x['mexico'] + x['hijo'], x['capital'])
@@ -75,6 +76,7 @@ class TestProspectivo(unittest.TestCase):
         np.testing.assert_allclose(x['seguro_eua_usd'][:, -1], (600/20)*1.21)
         np.testing.assert_allclose(x['seguro_mexico_mxn'][:, 0], 400)
         np.testing.assert_allclose(x['seguro_mexico_mxn'][:, -1], 400*1.10)
+        np.testing.assert_allclose(x['seguro_mexico_mxn'][:, 21], 400*1.10**(21/252))
 
     def test_tasa_usd_se_separa_del_efecto_cambiario(self):
         fx = self.fx.copy(); fx[:, -1] = 22.
