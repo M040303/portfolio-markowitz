@@ -406,12 +406,13 @@ if a['parametros_fx'].alpha + a['parametros_fx'].beta >= .995:
 resumen, markowitz, trayectorias, modelo, datos = st.tabs(['Decisión', 'Markowitz y línea de capital', 'Escenarios a 12 meses', 'Modelo del dólar', 'Datos y descarga'])
 with resumen:
     st.subheader('Rendimientos esperados a 12 meses')
-    t1,t2,t3 = st.columns(3)
+    t1,t2,t3,t4 = st.columns(4)
     t1.metric('EUA · inversión inicial en MXN',
               f'{e["eua_retorno"]:.2%}' if e['eua_retorno'] is not None else 'Sin asignación')
     t2.metric('México · inversión inicial en MXN',
               f'{e["mexico_retorno"]:.2%}' if e['mexico_retorno'] is not None else 'Sin asignación')
     t3.metric('Global · inversión inicial en MXN', f'{e["global_retorno"]:.2%}')
+    t4.metric('VaR global 95% · 12 meses', f'${r["var95"]:,.0f} MXN')
     st.dataframe(tabla_rendimientos(a).style.format(
         {'Base (MXN)': '${:,.0f}', 'Final esperado (MXN)': '${:,.0f}',
          'Rendimiento esperado': '{:.2%}'}, na_rep='—'),
@@ -444,11 +445,10 @@ with resumen:
     st.caption('Esta tabla corresponde al capital colocado inicialmente en la tasa libre de riesgo de cada país (30% por defecto). En EUA, el interés se gana en USD; la última columna también incorpora el movimiento USD/MXN. Los excedentes de la hija usan las mismas tasas, pero se muestran en la cuenta hija para evitar duplicar intereses.')
     st.caption('Tasa triangular: cada corrida Markowitz recibe su propio sorteo y cada escenario de 252 sesiones recibe otro. La tasa de un escenario permanece fija durante toda la ruta. Con tasa fija, todas las corridas y escenarios usan el valor indicado.')
     st.subheader('Riesgo global')
-    c1,c2,c3,c4 = st.columns(4)
+    c1,c2,c3 = st.columns(3)
     c1.metric('Capital mediano final', f'${r["mediana"]:,.0f} MXN')
     c2.metric('Prob. de terminar bajo el capital inicial', f'{r["prob_perdida"]:.1%}')
-    c3.metric('VaR 95% · pérdida en MXN', f'${r["var95"]:,.0f}')
-    c4.metric('ES 95% · pérdida media de cola', f'${r["es95"]:,.0f}')
+    c3.metric('ES 95% · pérdida media de cola', f'${r["es95"]:,.0f}')
     st.caption(f'Capital inicial ${a["capital"]:,.0f} MXN · EUA {a["fr_us"]:.0%} · México {1-a["fr_us"]:.0%} · dentro de cada país: activos {a["fr_riesgo"]:.0%} / tasa {1-a["fr_riesgo"]:.0%}.')
     st.plotly_chart(banda(a['simulacion']['capital'], a['fecha_base'], 'Capital total expresado en MXN', 'MXN'), width='stretch')
     st.write('**Rango final por escenarios**')
