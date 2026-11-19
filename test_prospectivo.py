@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 import pandas as pd
 from prospectivo import (ParametrosFX, estadisticas_riesgo, optimizar_markowitz,
-                         simular_fx, simular_portafolio, sortear_tasa)
+                         rendimientos_esperados, simular_fx, simular_portafolio,
+                         sortear_tasa)
 
 
 class TestProspectivo(unittest.TestCase):
@@ -45,6 +46,26 @@ class TestProspectivo(unittest.TestCase):
         self.assertTrue(np.all(x['capital'][:, -1] < y['capital'][:, -1]))
         self.assertTrue(np.all(x['hijo'][:, -1] > 0))
         self.assertTrue(np.all(x['transferencias'] > 0))
+
+    def test_desglose_concilia_en_cada_mes_y_escenario(self):
+        r = self.r.copy(); r.iloc[:, :2] = .03; r.iloc[:, 2:] = -.01
+        fx = self.fx.copy(); fx[:, 1:] = np.linspace(19., 23., 12)
+        x = self.simular(retornos=r, fx=fx,
+                         tasa_us=np.full(3, .04), tasa_mx=np.full(3, .08))
+        np.testing.assert_allclose(x['eua'] + x['mexico'] + x['hijo'], x['capital'])
+        np.testing.assert_allclose(x['eua_con_hija'] + x['mexico_con_hija'], x['capital'])
+        np.testing.assert_allclose(x['hijo_eua'] + x['hijo_mexico'], x['hijo'])
+        resumen = rendimientos_esperados(x, 1000., .6)
+        self.assertAlmostEqual(resumen['global_final'], x['capital'][:, -1].mean())
+        self.assertAlmostEqual(resumen['global_retorno'],
+                               .6*resumen['eua_retorno'] + .4*resumen['mexico_retorno'])
+        self.assertAlmostEqual(resumen['hija_retorno_aportaciones'],
+                               resumen['hija_final']/resumen['hija_aportaciones']-1)
+
+    def test_hija_sin_aportaciones_no_tiene_rendimiento(self):
+        resumen = rendimientos_esperados(self.simular(), 1000., .6)
+        self.assertIsNone(resumen['hija_retorno_aportaciones'])
+        self.assertAlmostEqual(resumen['global_retorno'], 0.)
 
     def test_tasa_segura_anual(self):
         x = self.simular(fraccion_riesgo=0., tasa_us=np.full(3,.21),
