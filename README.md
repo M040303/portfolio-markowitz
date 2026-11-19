@@ -1,68 +1,40 @@
-# Simulador Markowitz en Streamlit
+# Portafolio internacional prospectivo
 
-Aplicación interactiva que permite elegir cinco activos de Yahoo Finance y ejecutar simulaciones de portafolios buscando el índice de Sharpe máximo.
+Aplicación Streamlit para construir dos carteras Markowitz (EUA en USD y México en MXN), simularlas durante 12 meses y expresar el resultado conjunto en pesos mediante un modelo independiente de USD/MXN.
 
-## Funciones
-
-- Cinco tickers configurables.
-- Precios y rendimientos mensuales descargados con `yfinance`.
-- Bootstrap histórico de `^IRX` o tasa libre de riesgo fija.
-- Hasta 10,000 corridas y 25,000 portafolios por corrida.
-- Pesos no negativos que suman 100%.
-- Gráficas interactivas y animación.
-- Línea de asignación de capital con el punto 70/30 y el portafolio riesgoso.
-- Animación con el máximo de Sharpe actual destacado, todos los máximos
-  anteriores acumulados y una recta recalculada con la tasa sorteada para
-  cada corrida. La nube se muestra por muestreo para mantener la fluidez,
-  pero todos los máximos permanecen visibles.
-- Descarga de resultados en Excel.
-- Ajuste de pesos únicamente con datos anteriores al corte.
-- Evaluación mensual fuera de muestra y comparación de capital esperado con observado.
-- Comparativo animado por mes: tres trayectorias de capital y nueve indicadores
-  sincronizados (capital esperado, capital real, rendimientos, tasa y excedentes).
-- Asignación inicial 70% a la cartera de acciones y 30% a la tasa libre de riesgo.
-- Transferencia a una cuenta segura de la ganancia mensual riesgosa que supere
-  el umbral configurable (1.5% por defecto). Esa cuenta devenga la tasa desde
-  el siguiente intervalo; el Excel incluye el detalle de cada transferencia.
-
-## Ejecutar localmente
+## Ejecutar
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-En Windows, activa el entorno con:
+En Streamlit Community Cloud, conecta este repositorio y usa `app.py` como archivo principal. La versión histórica anterior sigue disponible con `streamlit run app_historico.py`.
 
-```powershell
-.venv\Scripts\activate
-```
+## Decisiones incorporadas
 
-## Publicar en Streamlit Community Cloud
+- Cinco tickers editables por país. Yahoo Finance entrega los precios ajustados. Selecciona acciones estadounidenses cotizadas en USD y mexicanas cotizadas en MXN; la app no detecta automáticamente la moneda de un símbolo.
+- Capital inicial en MXN y distribución EUA/México editable, inicialmente 60/40.
+- Dentro de cada país, división inicial editable, inicialmente 70% cartera riesgosa / 30% tasa libre de riesgo. Las posiciones se compran una sola vez y no se rebalancean.
+- Cada cartera riesgosa se elige mediante corridas Markowitz independientes. En cada corrida se sortea la tasa libre de riesgo anual (fija o triangular), se generan carteras con pesos no negativos que suman 100% y se guardan máximo Sharpe y mínima varianza. Valores iniciales: 1,000 corridas × 5,000 carteras por país; los controles permiten reducirlos si el equipo tiene menos recursos.
+- Tasa EUA identificada como T-Bills y México como CETES, ambas editables. Sus valores predeterminados son **supuestos**, no cotizaciones actualizadas. Si la tasa es triangular, se sortea una tasa anual por escenario y se mantiene durante ese año; para la optimización se sortea una por corrida.
+- El rendimiento de los diez activos se simula con un bootstrap mensual conjunto. Así se conserva la correlación histórica entre activos, mientras que USD/MXN se simula de manera independiente, como se definió para este proyecto.
+- El USD/MXN se descarga como `MXN=X` de Yahoo Finance. Se reestiman ARMA(2,2) y GARCH(1,1) con innovaciones t sobre rendimientos logarítmicos diarios. Se generan 252 sesiones y se toman 12 puntos equiespaciados como aproximación mensual. **No** se reutiliza el estado de octubre de 2026 del modelo de futuros: el ajuste se actualiza con los datos disponibles en la fecha de valoración.
+- Si se activa la cuenta hija, al final de cada mes se transfiere desde la parte riesgosa el importe que excede el rendimiento umbral (1.5% mensual por defecto); a partir del mes siguiente gana la tasa segura de ese país.
+- Se muestran bandas 5–95%, mediana, probabilidad simulada de pérdida, VaR y ES al 95% en MXN, composición de carteras, puntos de mínima varianza y máximo Sharpe, líneas de asignación de capital y exportación a Excel.
 
-1. Sube `app.py` y `requirements.txt` a un repositorio de GitHub.
-2. Entra a [share.streamlit.io](https://share.streamlit.io/).
-3. Selecciona el repositorio y establece `app.py` como archivo principal.
-4. Presiona **Deploy**.
+## Interpretación y límites
 
-## Nota sobre monedas
+La fecha de valoración es el límite de los datos descargados; sólo se usan meses completos anteriores al mes de valoración para el bootstrap bursátil. El último spot disponible inicia la simulación cambiaria. El horizonte de 252 sesiones y sus 12 cortes son una aproximación al año, no un calendario exacto de días hábiles de México y EUA.
 
-Los cinco activos deben estar expresados en una moneda comparable. `^IRX` es una referencia de Estados Unidos, por lo que resulta apropiada para activos cotizados en USD. Para América Móvil puede utilizarse `AMX`, su ADR en dólares, en lugar de `AMXL.MX`.
+El VaR es el percentil 95 de la **pérdida de capital al cierre** y el ES es la pérdida media de la cola peor. No miden necesidades intermedias de liquidez. La independencia entre activos y dólar fue una decisión de simplificación: puede subestimar o sobreestimar riesgo si en la realidad se mueven juntos. Los resultados también son sensibles a la elección de activos, la ventana histórica y la calibración GARCH, especialmente a un año. Se recomienda validar coberturas fuera de muestra y comparar con referencias simples antes de tomar decisiones.
 
-Este proyecto es educativo y no constituye asesoría financiera.
+No se incluyen costos, impuestos, deslizamiento, rebalanceo ni coberturas. El resultado es académico y no constituye asesoría financiera.
 
-## Cálculo del excedente
+## Estructura
 
-Para cada intervalo, si el capital riesgoso al inicio es `P`, su rendimiento
-real es `r` y la meta mensual es `h`, el importe transferido al cierre es
-`P × max(r − h, 0)`. Es una regla sobre el rendimiento **del periodo**, no
-una comparación con la rentabilidad acumulada del año. El 1.5% mensual
-compuesto equivale a cerca de 19.56% anual; el equivalente mensual exacto de
-20% anual es `(1.20) ** (1 / 12) - 1`, cerca de 1.53%.
-
-La valoración utiliza el primer precio disponible de los cinco activos
-desde cada fecha mensual objetivo y la tasa conocida antes del comienzo de
-cada intervalo. Los pesos del portafolio riesgoso se restablecen cada mes.
-Se omiten costos de transacción, impuestos y cambios de divisa.
+- `app.py`: interfaz y visualizaciones prospectivas.
+- `prospectivo.py`: optimización, calibración cambiaria, simulación y métricas.
+- `app_historico.py`, `backtest.py`: proyecto histórico anterior, conservado para consulta.
+- `test_prospectivo.py`: pruebas de contabilidad y riesgo con ejemplos controlados.
+- `requirements.txt`: dependencias de Streamlit Community Cloud.
