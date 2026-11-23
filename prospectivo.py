@@ -6,6 +6,7 @@ El tipo de cambio es independiente del bootstrap de rendimientos bursátiles.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 import warnings
 
 import numpy as np
@@ -54,6 +55,60 @@ def preparar_rendimientos_diarios(precios: pd.DataFrame, fecha_corte: pd.Timesta
     if len(r) < 252 or not np.isfinite(r.to_numpy()).all() or (r.to_numpy() <= -1).any():
         raise ValueError('Se necesitan al menos 252 rendimientos diarios válidos de todos los activos.')
     return r
+
+
+def seleccionar_activos_por_correlacion(
+    precios: pd.DataFrame, fecha_corte: pd.Timestamp,
+    ventana: int | None = 252,
+) -> tuple[list[str], list[str], pd.DataFrame, dict[str, float | int | bool]]:
+    """Busca 3 acciones inversas a otras 2 entre candidatas con histórico válido.
+
+    La condición estricta exige las seis correlaciones cruzadas negativas.
+    Si no existe una combinación factible, prioriza el mayor número de pares
+    negativos y, dentro de ese grupo, la menor varianza equiponderada.
+    """
+    x = precios.copy().sort_index()
+    x.index = pd.to_datetime(x.index).tz_localize(None)
+    x = x.loc[x.index <= pd.Timestamp(fecha_corte)]
+    validos = [ticker for ticker in x if x[ticker].notna().sum() >= 253
+               and x[ticker].iloc[-5:].notna().any()]
+    if len(validos) < 5:
+        raise ValueError('La selección automática necesita al menos cinco candidatas con precios recientes y 253 observaciones.')
+    x = x[validos].ffill(limit=5).dropna()
+    if ventana is not None:
+        if ventana < 252:
+            raise ValueError('La ventana de correlación debe tener al menos 252 sesiones.')
+        x = x.tail(ventana + 1)
+    retornos = x.pct_change(fill_method=None).dropna()
+    retornos = retornos.loc[:, retornos.std() > 0]
+    if len(retornos) < 252 or retornos.shape[1] < 5:
+        raise ValueError('No hay 252 rendimientos diarios coincidentes para cinco candidatas válidas.')
+    corr = retornos.corr()
+    cov = retornos.cov().to_numpy(float)
+    nombres = list(retornos.columns)
+    mejor = None
+    for tres in combinations(range(len(nombres)), 3):
+        restantes = [i for i in range(len(nombres)) if i not in tres]
+        for dos in combinations(restantes, 2):
+            cruzadas = corr.to_numpy()[np.ix_(tres, dos)]
+            negativos = int(np.count_nonzero(cruzadas < 0))
+            elegidos = list(tres + dos)
+            varianza = float(cov[np.ix_(elegidos, elegidos)].sum() / 25)
+            # Primero se cumple la regla; luego se favorece la menor varianza.
+            clave = (negativos, -varianza, -float(cruzadas.mean()))
+            if mejor is None or clave > mejor[0]:
+                mejor = (clave, tres, dos, cruzadas)
+    _, tres, dos, cruzadas = mejor
+    grupo_tres = [nombres[i] for i in tres]
+    grupo_dos = [nombres[i] for i in dos]
+    info = {'pares_negativos': int(np.count_nonzero(cruzadas < 0)),
+            'pares_requeridos': 6,
+            'regla_estricta': bool(np.all(cruzadas < 0)),
+            'correlacion_cruzada_media': float(cruzadas.mean()),
+            'correlacion_cruzada_maxima': float(cruzadas.max()),
+            'observaciones': int(len(retornos)),
+            'candidatas_validas': int(len(nombres))}
+    return grupo_tres, grupo_dos, corr, info
 
 
 def optimizar_asignacion_paises(
@@ -287,6 +342,8 @@ def simular_portafolio(
     seguro_us_usd = np.empty_like(total)
     seguro_mx_mxn = np.empty_like(total)
     transferencias = np.zeros((n, 12))
+    transferencias_us_mxn = np.zeros_like(transferencias)
+    transferencias_mx_mxn = np.zeros_like(transferencias)
     def guardar(j: int) -> None:
         usd = activos_us.sum(axis=1) + seguro_us
         mxn = activos_mx.sum(axis=1) + seguro_mx
@@ -326,7 +383,10 @@ def simular_portafolio(
             activos_mx *= np.divide(valor_mx - trans_mx, valor_mx, out=np.ones(n), where=valor_mx > 0)[:, None]
             hijo_us += trans_us
             hijo_mx += trans_mx
-            transferencias[:, j // 21 - 1] = trans_us * fx[:, j] + trans_mx
+            transferencias_us_mxn[:, j // 21 - 1] = trans_us * fx[:, j]
+            transferencias_mx_mxn[:, j // 21 - 1] = trans_mx
+            transferencias[:, j // 21 - 1] = (transferencias_us_mxn[:, j // 21 - 1]
+                                                + transferencias_mx_mxn[:, j // 21 - 1])
         if j % 21 == 0:
             previo_us = activos_us.sum(axis=1)
             previo_mx = activos_mx.sum(axis=1)
@@ -338,7 +398,9 @@ def simular_portafolio(
             'mexico_con_hija': pais_mx_total,
             'seguro_eua_usd': seguro_us_usd,
             'seguro_mexico_mxn': seguro_mx_mxn,
-            'transferencias': transferencias}
+            'transferencias': transferencias,
+            'transferencias_us_mxn': transferencias_us_mxn,
+            'transferencias_mx_mxn': transferencias_mx_mxn}
 
 
 def estadisticas_riesgo(capital_final: np.ndarray, capital_inicial: float) -> dict[str, float]:
@@ -380,3 +442,41 @@ def rendimientos_esperados(simulacion: dict[str, np.ndarray], capital: float,
             'hija_retorno_aportaciones': retorno_hija,
             'hija_aportaciones': aportaciones_esperadas,
             'hija_escenarios_con_aportacion': float(con_aportacion.mean())}
+
+
+def tabla_resumen_componentes(simulacion: dict[str, np.ndarray], fx: np.ndarray,
+                              capital: float, fraccion_us: float,
+                              fraccion_riesgo: float) -> pd.DataFrame:
+    """Desglosa valor y P&L sin contar los traspasos a la hija dos veces."""
+    us = capital * fraccion_us
+    mx = capital * (1 - fraccion_us)
+    fx_final = fx[:, -1]
+    seguro_us = simulacion['seguro_eua_usd'][:, -1] * fx_final
+    seguro_mx = simulacion['seguro_mexico_mxn'][:, -1]
+    retiro_us = simulacion['transferencias_us_mxn'].sum(axis=1)
+    retiro_mx = simulacion['transferencias_mx_mxn'].sum(axis=1)
+    componentes = [
+        ('Portafolio global', capital, np.zeros(len(fx)), simulacion['capital'][:, -1], np.zeros(len(fx))),
+        ('Acciones · México', mx * fraccion_riesgo, np.zeros(len(fx)),
+         simulacion['mexico'][:, -1] - seguro_mx, retiro_mx),
+        ('Acciones · EUA (MXN)', us * fraccion_riesgo, np.zeros(len(fx)),
+         simulacion['eua'][:, -1] - seguro_us, retiro_us),
+        ('Tasa segura · México', mx * (1 - fraccion_riesgo), np.zeros(len(fx)),
+         seguro_mx, np.zeros(len(fx))),
+        ('Tasa segura · EUA (MXN)', us * (1 - fraccion_riesgo), np.zeros(len(fx)),
+         seguro_us, np.zeros(len(fx))),
+        ('Hija · México', 0., retiro_mx, simulacion['hijo_mexico'][:, -1], np.zeros(len(fx))),
+        ('Hija · EUA (MXN)', 0., retiro_us, simulacion['hijo_eua'][:, -1], np.zeros(len(fx))),
+    ]
+    filas = []
+    for nombre, inicial, aportes, final, retiros in componentes:
+        resultado = final - inicial - aportes + retiros
+        base = inicial if inicial > 0 else float(aportes.mean())
+        filas.append({'Componente': nombre, 'Inversión inicial (MXN)': inicial,
+                      'Aportaciones esperadas (MXN)': float(aportes.mean()),
+                      'Valor final esperado (MXN)': float(final.mean()),
+                      'Ganancia esperada (MXN)': float(resultado.mean()),
+                      'Rendimiento': float(resultado.mean()/base) if base > 0 else np.nan,
+                      'Riesgo (desv. % sobre base)': float(resultado.std(ddof=1)/base) if base > 0 else np.nan,
+                      'VaR 95%': float(max(0., np.quantile(-resultado, .95)/base)) if base > 0 else np.nan})
+    return pd.DataFrame(filas)

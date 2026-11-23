@@ -13,7 +13,8 @@ En Streamlit Community Cloud, conecta este repositorio y usa `app.py` como archi
 
 ## Decisiones incorporadas
 
-- Cinco tickers editables por país. Yahoo Finance entrega los precios ajustados. Selecciona acciones estadounidenses cotizadas en USD y mexicanas cotizadas en MXN; la app no detecta automáticamente la moneda de un símbolo.
+- Cinco tickers por país. El modo manual acepta símbolos editables. El modo automático busca cinco entre una lista acotada y editable de candidatas grandes de EUA y México; no se presenta como un ranking vivo de capitalización. La app excluye candidatas sin al menos 253 precios recientes y rendimientos diarios coincidentes. Yahoo Finance entrega precios ajustados. Selecciona acciones estadounidenses cotizadas en USD y mexicanas cotizadas en MXN; la app no detecta automáticamente la moneda de un símbolo.
+- La selección automática busca un grupo de tres acciones con correlación negativa frente a cada una de otras dos acciones del mismo país: seis pares cruzados negativos, calculados sobre rendimientos diarios. La ventana es editable (252, 504, 756 sesiones o todo el histórico). Entre las combinaciones que cumplen, elige la de menor varianza histórica con pesos iguales. Si ninguna cumple, favorece la que tenga más pares negativos y luego menor varianza, mostrando una advertencia explícita. En modo manual se muestra el mismo diagnóstico sin sustituir los símbolos elegidos.
 - Capital inicial en MXN. La distribución EUA/México se estima mediante un segundo Markowitz entre los dos portafolios país completos, ambos expresados en MXN y con pesos no negativos que suman 100%. La asignación resultante se aplica una sola vez al comienzo de la proyección.
 - Dentro de cada país, división inicial editable, inicialmente 70% cartera riesgosa / 30% tasa libre de riesgo. Las posiciones se compran una sola vez y no se rebalancean.
 - Cada cartera riesgosa se elige mediante corridas Markowitz independientes. En cada corrida se sortea la tasa libre de riesgo anual (fija o triangular), se generan carteras con pesos no negativos que suman 100% y se guardan máximo Sharpe y mínima varianza. Valores iniciales: 1,000 corridas × 5,000 carteras por país; los controles permiten reducirlos si el equipo tiene menos recursos.
@@ -24,6 +25,7 @@ En Streamlit Community Cloud, conecta este repositorio y usa `app.py` como archi
 - El USD/MXN se descarga como `MXN=X` de Yahoo Finance. Se reestiman ARMA(2,2) y GARCH(1,1) con innovaciones t sobre rendimientos logarítmicos diarios. Se generan 252 sesiones y se valúan las carteras cada día. **No** se reutiliza el estado de octubre de 2026 del modelo de futuros: el ajuste se actualiza con los datos disponibles en la fecha de valoración.
 - Si se activa la cuenta hija, al final de cada bloque de 21 sesiones se transfiere desde la parte riesgosa el importe que excede el rendimiento umbral (1.5% por bloque por defecto); desde la sesión siguiente gana la tasa segura de ese país.
 - Se muestran bandas 5–95%, mediana, probabilidad simulada de pérdida, VaR global al 95% como porcentaje del capital inicial y ES al 95% en MXN, composición de carteras, puntos de mínima varianza y máximo Sharpe, líneas de asignación de capital y exportación a Excel.
+- La tabla resumen separa acciones México/EUA, tasas seguras México/EUA y las dos partes de la hija. Reporta inversión inicial, aportaciones, valor final esperado, ganancia económica, rendimiento, dispersión de resultados y VaR porcentual. Los traspasos desde las acciones a la hija se suman a la ganancia atribuida a la cartera de origen y se restan de la ganancia de la hija, de modo que las ganancias del desglose concilian con la ganancia global. Las tasas de las hijas usan sus aportaciones esperadas como base, ya que parten de cero.
 - El tablero muestra los pesos de cada acción dentro de su cartera riesgosa, del capital de su país y del capital global. También muestra el rendimiento histórico esperado de cada cartera riesgosa y el rendimiento prospectivo esperado de EUA, México y el conjunto.
 - La animación diaria muestra por defecto una ruta individual irregular del bootstrap; también permite ver el promedio, que suele ser más suave al agregar muchos escenarios. Separa cartera EUA, cartera México y cuenta hija, con el total. Los tres saldos son excluyentes y suman el capital global en las 253 observaciones; el Excel incluye las mismas columnas por sesión.
 
@@ -40,6 +42,10 @@ Con tasa triangular, cada corrida Markowitz recibe una tasa anual nueva y cada e
 El efecto cambiario se calcula por escenario como el capital final convertido con el USD/MXN simulado menos ese mismo capital convertido al USD/MXN inicial. El indicador muestra la **mediana de esas diferencias**. Una cifra negativa indica que el cambio de divisa redujo el valor final en MXN respecto al escenario hipotético de dólar constante; no es la pérdida total del portafolio.
 
 No se incluyen costos, impuestos, deslizamiento, rebalanceo ni coberturas. El resultado es académico y no constituye asesoría financiera.
+
+La correlación se calcula con la ventana histórica elegida y puede cambiar de signo en el futuro. Las listas automáticas son subconjuntos manejables de emisoras grandes, no todos los componentes de sus índices ni una actualización automática del orden por capitalización. El universo puede ajustarse desde la barra lateral antes de ejecutar el análisis.
+
+Como referencia para acotar el universo se usan el [S&P 500 Top 50](https://www.spglobal.com/spdji/en/indices/equity/sp-500-top-50-index/) en EUA y el [S&P/BMV IPC](https://www.spglobal.com/spdji/es/indices/equity/sp-bmv-ipc/) en México. La aplicación valida los precios de las candidatas con Yahoo Finance antes de seleccionarlas.
 
 ## Estructura
 
