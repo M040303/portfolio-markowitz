@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from prospectivo import (ParametrosFX, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
                          rendimientos_esperados, simular_fx, simular_portafolio,
-                         sortear_tasa)
+                         seleccionar_activos_por_correlacion, sortear_tasa,
+                         tabla_resumen_componentes)
 
 
 class TestProspectivo(unittest.TestCase):
@@ -113,6 +114,32 @@ class TestProspectivo(unittest.TestCase):
         x = self.simular(retornos=r, umbral_excedente=None)
         self.assertFalse(np.allclose(x['capital'][0], x['capital'][1]))
         self.assertGreater(np.std(np.diff(x['capital'][0])), 0.)
+
+    def test_seleccion_automatica_cumple_seis_correlaciones_negativas(self):
+        fechas = pd.bdate_range('2024-01-02', periods=301)
+        factor = .003 * np.sin(np.arange(300) * .17)
+        r = np.column_stack([factor + .0001*i for i in range(3)]
+                            + [-factor + .0001*i for i in range(2)])
+        precios = pd.DataFrame(100*np.cumprod(np.vstack([np.ones(5), 1+r]), axis=0),
+                               index=fechas, columns=list('ABCDE'))
+        tres, dos, corr, info = seleccionar_activos_por_correlacion(precios, fechas[-1])
+        self.assertTrue(info['regla_estricta'])
+        self.assertEqual(info['pares_negativos'], 6)
+        self.assertTrue((corr.loc[tres, dos] < 0).to_numpy().all())
+
+    def test_tabla_componentes_concilia_traspasos(self):
+        r = self.r.copy(); r.iloc[:] = .005
+        fx = self.fx.copy(); fx[:, 1:] = np.linspace(20., 21., 252)
+        x = self.simular(retornos=r, fx=fx)
+        tabla = tabla_resumen_componentes(x, fx, 1000., .6, .7)
+        detalle = tabla.iloc[1:]
+        self.assertAlmostEqual(detalle['Inversión inicial (MXN)'].sum(), 1000.)
+        self.assertAlmostEqual(detalle['Valor final esperado (MXN)'].sum(),
+                               tabla.iloc[0]['Valor final esperado (MXN)'])
+        self.assertAlmostEqual(detalle['Ganancia esperada (MXN)'].sum(),
+                               tabla.iloc[0]['Ganancia esperada (MXN)'])
+        np.testing.assert_allclose(x['transferencias_us_mxn'] +
+                                   x['transferencias_mx_mxn'], x['transferencias'])
 
     def test_markowitz_pesos_validos(self):
         rng = np.random.default_rng(5)

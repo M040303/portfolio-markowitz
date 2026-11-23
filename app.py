@@ -18,15 +18,25 @@ import yfinance as yf
 from prospectivo import (
     ajustar_fx_arma_garch, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
     preparar_rendimientos, preparar_rendimientos_diarios, rendimientos_esperados, simular_fx,
-    simular_portafolio, sortear_tasa,
+    seleccionar_activos_por_correlacion, simular_portafolio, sortear_tasa,
+    tabla_resumen_componentes,
 )
+
+# Universos acotados de emisoras grandes; no son un ranking vivo por capitalización.
+CANDIDATAS_US = ('MSFT','AAPL','NVDA','AMZN','GOOGL','META','BRK-B',
+                 'JPM','V','XOM','WMT','JNJ','PG','COST')
+CANDIDATAS_MX = ('GMEXICOB.MX','GFNORTEO.MX','AMXB.MX','FEMSAUBD.MX',
+                 'CEMEXCPO.MX','WALMEX.MX','GAPB.MX','ASURB.MX',
+                 'BIMBOA.MX','AC.MX','KIMBERA.MX','GRUMAB.MX',
+                 'BBAJIOO.MX','CUERVO.MX')
 
 st.set_page_config(page_title='Portafolio internacional | México y EUA', page_icon='🌎', layout='wide')
 st.markdown('<style>.block-container{padding-top:1.4rem;padding-bottom:3rem}</style>', unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def descargar_precios(tickers: tuple[str, ...], inicio: date, fin: date) -> pd.DataFrame:
+def descargar_precios(tickers: tuple[str, ...], inicio: date, fin: date,
+                      estricto: bool = True) -> pd.DataFrame:
     datos = yf.download(list(tickers), start=inicio.isoformat(),
                         end=(fin + timedelta(days=1)).isoformat(), interval='1d',
                         auto_adjust=True, progress=False, threads=True)
@@ -40,9 +50,9 @@ def descargar_precios(tickers: tuple[str, ...], inicio: date, fin: date) -> pd.D
     precios.columns = [str(c).upper() for c in precios.columns]
     precios.index = pd.to_datetime(precios.index).tz_localize(None)
     faltan = [t for t in tickers if t not in precios.columns or precios[t].dropna().empty]
-    if faltan:
+    if faltan and estricto:
         raise ValueError('Sin precios para: ' + ', '.join(faltan))
-    return precios[list(tickers)].sort_index().ffill(limit=5)
+    return precios.reindex(columns=list(tickers)).sort_index().ffill(limit=5)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -210,6 +220,18 @@ def grafica_asignacion_global(frontera: pd.DataFrame, asignacion: dict) -> go.Fi
     return fig
 
 
+def grafica_correlaciones(corr: pd.DataFrame, titulo: str) -> go.Figure:
+    fig = go.Figure(go.Heatmap(z=corr.to_numpy(), x=list(corr.columns), y=list(corr.index),
+                               zmin=-1, zmax=1, zmid=0, colorscale='RdBu',
+                               text=np.round(corr.to_numpy(), 2), texttemplate='%{text:.2f}',
+                               hovertemplate='%{y} / %{x}: %{z:.2f}<extra></extra>',
+                               colorbar=dict(title='ρ')))
+    fig.update_layout(title=titulo, height=max(410, 32 * len(corr) + 120),
+                      xaxis=dict(tickangle=-45), yaxis=dict(autorange='reversed'),
+                      margin=dict(b=90))
+    return fig
+
+
 def tasa_controls(nombre: str, clave: str, defecto: float):
     modo = st.selectbox(f'{nombre}: método', ['Triangular', 'Fija'], key=f'{clave}_modo')
     if modo == 'Fija':
@@ -331,6 +353,19 @@ def excel_descargable(analisis: dict) -> bytes:
         tabla_rendimientos(analisis).to_excel(writer, sheet_name='Rendimientos_esperados', index=False)
         tabla_pesos(analisis).to_excel(writer, sheet_name='Pesos', index=False)
         tabla_tasas_libres(analisis).to_excel(writer, sheet_name='Tasas_libres', index=False)
+        tabla_resumen_componentes(simul, analisis['fx'], analisis['capital'],
+                                  analisis['fr_us'], analisis['fr_riesgo']).to_excel(
+                                      writer, sheet_name='Resumen_portafolio', index=False)
+        analisis['corr_us'].to_excel(writer, sheet_name='Correlaciones_EUA')
+        analisis['corr_mx'].to_excel(writer, sheet_name='Correlaciones_MX')
+        pd.DataFrame([
+            {'País': pais, 'Grupo': grupo, 'Activo': ticker,
+             'Pares cruzados negativos': analisis[f'info_{clave}']['pares_negativos'],
+             'Regla de seis cumplida': analisis[f'info_{clave}']['regla_estricta']}
+            for pais, clave in [('EUA', 'us'), ('México', 'mx')]
+            for grupo, lista in [('Tres', analisis[f'grupo_{clave}_3']),
+                                 ('Dos', analisis[f'grupo_{clave}_2'])]
+            for ticker in lista]).to_excel(writer, sheet_name='Seleccion_activos', index=False)
         pd.DataFrame([analisis['asignacion_global']]).to_excel(writer, sheet_name='Asignacion_global', index=False)
         analisis['frontera_global'].to_excel(writer, sheet_name='Markowitz_global', index=False)
         escenarios.to_excel(writer, sheet_name='Escenarios', index=False)
@@ -348,10 +383,22 @@ st.caption('Markowitz determina la asignación EUA/México; el reparto 70/30 den
 
 with st.sidebar:
     st.header('Configurar escenario')
+    modo_activos = st.radio('Selección de activos', ['Elegir manualmente', 'Elegir automáticamente'])
+    ventana_corr = st.selectbox('Ventana de correlación diaria',
+                                [252, 504, 756, 'Todo el histórico'], index=0,
+                                help='La selección automática y las matrices usan las últimas sesiones coincidentes. 252 sesiones ≈ un año bursátil.')
+    ventana_corr = None if ventana_corr == 'Todo el histórico' else ventana_corr
     with st.form('configuracion'):
         st.subheader('Activos')
-        t_us = [st.text_input(f'EUA · activo {i+1}', value=t, key=f'us_{i}') for i,t in enumerate(['MSFT','AAPL','NVDA','JNJ','XOM'])]
-        t_mx = [st.text_input(f'México · activo {i+1}', value=t, key=f'mx_{i}') for i,t in enumerate(['WALMEX.MX','GFNORTEO.MX','FEMSAUBD.MX','AMXB.MX','GMEXICOB.MX'])]
+        if modo_activos == 'Elegir manualmente':
+            t_us = [st.text_input(f'EUA · activo {i+1}', value=t, key=f'us_{i}') for i,t in enumerate(['MSFT','AAPL','NVDA','JNJ','XOM'])]
+            t_mx = [st.text_input(f'México · activo {i+1}', value=t, key=f'mx_{i}') for i,t in enumerate(['WALMEX.MX','GFNORTEO.MX','FEMSAUBD.MX','AMXB.MX','GMEXICOB.MX'])]
+            pool_us, pool_mx = (), ()
+        else:
+            st.caption('Candidatas grandes de mercados EUA y México; no es un ranking actualizado por capitalización. Se excluyen símbolos sin datos suficientes. La regla de correlación usa rendimientos diarios, no precios.')
+            pool_us = tuple(st.multiselect('Candidatas EUA', CANDIDATAS_US, default=CANDIDATAS_US))
+            pool_mx = tuple(st.multiselect('Candidatas México', CANDIDATAS_MX, default=CANDIDATAS_MX))
+            t_us, t_mx = [], []
         st.subheader('Horizonte y capital')
         inicio = st.date_input('Inicio del histórico', value=date(2018,1,1))
         corte = st.date_input('Fecha de valoración', value=date.today())
@@ -376,17 +423,36 @@ with st.sidebar:
 if ejecutar:
     st.session_state.pop('prospectivo', None)
     try:
-        us = tuple(t.strip().upper() for t in t_us)
-        mx = tuple(t.strip().upper() for t in t_mx)
-        todos = us + mx
-        if any(not t for t in todos) or len(set(todos)) != len(todos):
-            raise ValueError('Completa diez símbolos distintos: cinco por país.')
+        if modo_activos == 'Elegir manualmente':
+            us = tuple(t.strip().upper() for t in t_us)
+            mx = tuple(t.strip().upper() for t in t_mx)
+            todos = us + mx
+            if any(not t for t in todos) or len(set(todos)) != len(todos):
+                raise ValueError('Completa diez símbolos distintos: cinco por país.')
+        else:
+            if len(pool_us) < 5 or len(pool_mx) < 5:
+                raise ValueError('Elige al menos cinco candidatas por país para la selección automática.')
+            todos = pool_us + pool_mx
         if not inicio < corte <= date.today():
             raise ValueError('El histórico debe iniciar antes de la valoración y ésta no puede ser futura.')
         if not (rf_us_par[0] <= rf_us_par[1] <= rf_us_par[2] and rf_mx_par[0] <= rf_mx_par[1] <= rf_mx_par[2]):
             raise ValueError('En cada tasa debe cumplirse mínimo ≤ moda ≤ máximo.')
         with st.spinner('Descargando históricos y estimando el modelo USD/MXN…'):
-            precios = descargar_precios(todos, inicio, corte)
+            precios_pool = descargar_precios(todos, inicio, corte,
+                                             estricto=modo_activos == 'Elegir manualmente')
+            if modo_activos == 'Elegir automáticamente':
+                grupo_us_3, grupo_us_2, corr_us, info_us = seleccionar_activos_por_correlacion(
+                    precios_pool[list(pool_us)], pd.Timestamp(corte), ventana_corr)
+                grupo_mx_3, grupo_mx_2, corr_mx, info_mx = seleccionar_activos_por_correlacion(
+                    precios_pool[list(pool_mx)], pd.Timestamp(corte), ventana_corr)
+                us, mx = tuple(grupo_us_3 + grupo_us_2), tuple(grupo_mx_3 + grupo_mx_2)
+                precios = precios_pool[list(us + mx)]
+            else:
+                precios = precios_pool
+                grupo_us_3, grupo_us_2, corr_us, info_us = seleccionar_activos_por_correlacion(
+                    precios[list(us)], pd.Timestamp(corte), ventana_corr)
+                grupo_mx_3, grupo_mx_2, corr_mx, info_mx = seleccionar_activos_por_correlacion(
+                    precios[list(mx)], pd.Timestamp(corte), ventana_corr)
             fx_historico = descargar_dolar(inicio, corte)
             retornos = preparar_rendimientos(precios, pd.Timestamp(corte))
             retornos_diarios = preparar_rendimientos_diarios(precios, pd.Timestamp(corte))
@@ -415,6 +481,10 @@ if ejecutar:
             riesgo = estadisticas_riesgo(simul['capital'][:, -1], float(capital))
             esperados = rendimientos_esperados(simul, float(capital), fr_us)
         st.session_state['prospectivo'] = dict(us=us, mx=mx, retornos=retornos,
+            modo_activos=modo_activos, grupo_us_3=grupo_us_3, grupo_us_2=grupo_us_2,
+            ventana_corr=ventana_corr,
+            grupo_mx_3=grupo_mx_3, grupo_mx_2=grupo_mx_2,
+            corr_us=corr_us, corr_mx=corr_mx, info_us=info_us, info_mx=info_mx,
             ganadores_us=gan_us, ganadores_mx=gan_mx, pesos_us=pesos_us,
             pesos_mx=pesos_mx, cuadros_us=cuadros_us, cuadros_mx=cuadros_mx,
             asignacion_global=asignacion_global, frontera_global=frontera_global,
@@ -453,6 +523,17 @@ with resumen:
         {'Base (MXN)': '${:,.0f}', 'Final esperado (MXN)': '${:,.0f}',
          'Rendimiento esperado': '{:.2%}'}, na_rep='—'),
         hide_index=True, width='stretch')
+    st.subheader('Tabla resumen del portafolio')
+    resumen_componentes = tabla_resumen_componentes(a['simulacion'], a['fx'],
+                                                      a['capital'], a['fr_us'], a['fr_riesgo'])
+    st.dataframe(resumen_componentes.style.format({
+        'Inversión inicial (MXN)': '${:,.0f}',
+        'Aportaciones esperadas (MXN)': '${:,.0f}',
+        'Valor final esperado (MXN)': '${:,.0f}',
+        'Ganancia esperada (MXN)': '${:,.0f}',
+        'Rendimiento': '{:.2%}', 'Riesgo (desv. % sobre base)': '{:.2%}',
+        'VaR 95%': '{:.2%}'}, na_rep='—'), hide_index=True, width='stretch')
+    st.caption('La ganancia de las carteras de acciones incluye los excedentes retirados y enviados a la hija; la ganancia de la hija excluye esas aportaciones. Así, las ganancias de los seis componentes suman la ganancia global. En las hijas, el rendimiento y el riesgo se calculan sobre las aportaciones esperadas, no sobre un capital inicial de cero. El riesgo es la dispersión entre resultados finales simulados, no volatilidad diaria.')
     st.caption('EUA y México incluyen los excedentes originados en cada país para calcular su rendimiento sobre la inversión inicial. La hija se muestra aparte: inicia en $0 y su rendimiento se calcula sobre sus aportaciones acumuladas, sin anualizar. Los valores esperados son promedios de los escenarios simulados; EUA ya incluye la conversión USD/MXN.')
     st.subheader('Rendimiento de la parte en tasa libre de riesgo')
     tasas_tabla = tabla_tasas_libres(a)
@@ -492,6 +573,19 @@ with resumen:
     st.caption('El VaR mostrado arriba mide el percentil 95 de la pérdida respecto del capital inicial, en porcentaje; el ES es la pérdida media del 5% peor, en MXN. Ambas cifras dependen del modelo y son pérdidas al cierre, no necesidades intermedias de liquidez.')
 
 with markowitz:
+    st.subheader('Correlaciones para elegir activos')
+    ventana_etiqueta = (f'{a["ventana_corr"]} sesiones' if a['ventana_corr']
+                       else 'todo el histórico')
+    st.caption(f'Se calculan con rendimientos diarios de precios ajustados sobre {ventana_etiqueta}. El grupo de tres y el de dos se comparan en seis pares cruzados; una correlación negativa histórica no garantiza protección futura.')
+    for pais, corr, tres, dos, info in [
+        ('EUA', a['corr_us'], a['grupo_us_3'], a['grupo_us_2'], a['info_us']),
+        ('México', a['corr_mx'], a['grupo_mx_3'], a['grupo_mx_2'], a['info_mx'])]:
+        st.markdown(f'**{pais}:** grupo de tres: {", ".join(tres)} · grupo de dos: {", ".join(dos)}')
+        if info['regla_estricta']:
+            st.success(f'{pais}: las seis correlaciones cruzadas son negativas ({info["observaciones"]} rendimientos diarios).')
+        else:
+            st.warning(f'{pais}: sólo {info["pares_negativos"]} de 6 correlaciones cruzadas son negativas; no existe una combinación que cumpla la regla estricta dentro de estas {info["candidatas_validas"]} candidatas válidas.')
+        st.plotly_chart(grafica_correlaciones(corr, f'Matriz de correlación diaria · {pais}'), width='stretch')
     st.subheader('Asignación global entre EUA y México')
     g1, g2, g3 = st.columns(3)
     g1.metric('Peso inicial EUA', f'{a["fr_us"]:.1%}')
