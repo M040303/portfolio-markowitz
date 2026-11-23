@@ -56,6 +56,58 @@ def preparar_rendimientos_diarios(precios: pd.DataFrame, fecha_corte: pd.Timesta
     return r
 
 
+def optimizar_asignacion_paises(
+    retornos_diarios: pd.DataFrame, fx_historico: pd.Series,
+    pesos_us: np.ndarray, pesos_mx: np.ndarray,
+    tickers_us: list[str], tickers_mx: list[str],
+    fraccion_riesgo: float, rf_us_anual: float, rf_mx_anual: float,
+) -> tuple[dict[str, float], pd.DataFrame]:
+    """Markowitz de las dos carteras completas, ambas expresadas en MXN.
+
+    Para estimar media y covarianza se usan retornos diarios históricos
+    de cada cartera, con 70/30 (o el reparto elegido) y la tasa de referencia.
+    La cartera de EUA se convierte diariamente por USD/MXN. La cuadrícula
+    de pesos sólo define la compra inicial prospectiva; no impone rebalanceos.
+    """
+    if not 0 <= fraccion_riesgo <= 1 or min(rf_us_anual, rf_mx_anual) <= -1:
+        raise ValueError('Revisa las tasas y el reparto entre activos y tasa segura.')
+    if not (np.isclose(pesos_us.sum(), 1) and np.isclose(pesos_mx.sum(), 1)):
+        raise ValueError('Los pesos de los activos por país deben sumar 100%.')
+    fx = pd.to_numeric(fx_historico, errors='coerce').sort_index()
+    fx.index = pd.to_datetime(fx.index).tz_localize(None)
+    cambio = fx.pct_change(fill_method=None).rename('Cambio USD/MXN')
+    conjunto = retornos_diarios.join(cambio, how='inner').dropna()
+    if len(conjunto) < 252:
+        raise ValueError('La optimización EUA/México requiere al menos 252 sesiones coincidentes de activos y USD/MXN.')
+    r_us = conjunto[tickers_us].to_numpy(float) @ pesos_us
+    r_mx = conjunto[tickers_mx].to_numpy(float) @ pesos_mx
+    rf_us_dia = (1 + rf_us_anual) ** (1 / 252) - 1
+    rf_mx_dia = (1 + rf_mx_anual) ** (1 / 252) - 1
+    us_local = fraccion_riesgo * r_us + (1 - fraccion_riesgo) * rf_us_dia
+    mx_local = fraccion_riesgo * r_mx + (1 - fraccion_riesgo) * rf_mx_dia
+    r = np.column_stack(((1 + us_local) * (1 + conjunto['Cambio USD/MXN'].to_numpy(float)) - 1,
+                         mx_local))
+    media = r.mean(axis=0)
+    cov = np.cov(r, rowvar=False)
+    pesos_eua = np.linspace(0, 1, 1001)
+    pesos = np.column_stack((pesos_eua, 1 - pesos_eua))
+    mu = pesos @ media
+    vol = np.sqrt(np.maximum(np.einsum('ij,jk,ik->i', pesos, cov, pesos), 0))
+    sharpe = np.divide(mu - rf_mx_dia, vol, out=np.full(len(mu), -np.inf), where=vol > 0)
+    i = int(np.argmax(sharpe))
+    j = int(np.argmin(vol))
+    if not np.isfinite(sharpe[i]):
+        raise ValueError('No se obtuvo un Sharpe global definido.')
+    frontera = pd.DataFrame({'Peso EUA': pesos_eua, 'Peso México': 1 - pesos_eua,
+                             'Rendimiento histórico diario': mu,
+                             'Volatilidad diaria': vol, 'Sharpe anualizado': sharpe * np.sqrt(252)})
+    return {'eua': float(pesos_eua[i]), 'mexico': float(1 - pesos_eua[i]),
+            'min_var_eua': float(pesos_eua[j]),
+            'retorno_diario': float(mu[i]), 'vol_diaria': float(vol[i]),
+            'sharpe_anual': float(sharpe[i] * np.sqrt(252)),
+            'observaciones': int(len(conjunto))}, frontera
+
+
 def optimizar_markowitz(
     retornos: pd.DataFrame,
     rf_anual_referencia: float | np.ndarray,
@@ -299,6 +351,7 @@ def estadisticas_riesgo(capital_final: np.ndarray, capital_inicial: float) -> di
             'p05': float(np.quantile(x, .05)), 'p95': float(np.quantile(x, .95)),
             'prob_perdida': float(np.mean(x < capital_inicial)),
             'var95': max(0., q95),
+            'var95_pct': max(0., q95 / capital_inicial),
             'es95': max(0., float(perdida[perdida >= q95].mean()))}
 
 
