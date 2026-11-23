@@ -37,10 +37,16 @@ def preparar_rendimientos(precios: pd.DataFrame, fecha_corte: pd.Timestamp) -> p
     x = precios.copy().sort_index()
     x.index = pd.to_datetime(x.index).tz_localize(None)
     x = x.loc[x.index < pd.Timestamp(fecha_corte).replace(day=1)]
-    mensual = x.resample('ME').last().dropna()
+    mensual_por_activo = x.resample('ME').last()
+    mensual = mensual_por_activo.dropna()
     r = mensual.pct_change(fill_method=None).dropna()
     if len(r) < 24:
-        raise ValueError('Se necesitan al menos 24 rendimientos mensuales completos por activo.')
+        cortos = [f'{col} ({mensual_por_activo[col].notna().sum()} meses)'
+                  for col in mensual_por_activo if mensual_por_activo[col].notna().sum() < 25]
+        detalle = f' Activos con historial corto: {", ".join(cortos[:4])}.' if cortos else ''
+        raise ValueError(f'Sólo hay {len(r)} rendimientos mensuales conjuntos antes de la valoración; '
+                         'Markowitz requiere al menos 24. Elige un inicio histórico anterior '
+                         'o activa “Ampliar histórico”.' + detalle)
     if not np.isfinite(r.to_numpy()).all() or (r.to_numpy() <= -1).any():
         raise ValueError('El histórico contiene rendimientos inválidos.')
     return r
@@ -70,10 +76,11 @@ def seleccionar_activos_por_correlacion(
     x = precios.copy().sort_index()
     x.index = pd.to_datetime(x.index).tz_localize(None)
     x = x.loc[x.index <= pd.Timestamp(fecha_corte)]
+    cierres_mensuales = x.loc[x.index < pd.Timestamp(fecha_corte).replace(day=1)].resample('ME').last().notna().sum()
     validos = [ticker for ticker in x if x[ticker].notna().sum() >= 253
-               and x[ticker].iloc[-5:].notna().any()]
+               and x[ticker].iloc[-5:].notna().any() and cierres_mensuales[ticker] >= 25]
     if len(validos) < 5:
-        raise ValueError('La selección automática necesita al menos cinco candidatas con precios recientes y 253 observaciones.')
+        raise ValueError('La selección automática necesita al menos cinco candidatas con precios recientes, 253 observaciones diarias y 25 cierres mensuales anteriores a la valoración. Amplía el histórico o el universo.')
     x = x[validos].ffill(limit=5).dropna()
     if ventana is not None:
         if ventana < 252:

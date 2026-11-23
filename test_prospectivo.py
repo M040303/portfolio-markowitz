@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 from prospectivo import (ParametrosFX, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
+                         preparar_rendimientos,
                          rendimientos_esperados, simular_fx, simular_portafolio,
                          seleccionar_activos_por_correlacion, sortear_tasa,
                          tabla_resumen_componentes)
@@ -30,6 +31,12 @@ class TestProspectivo(unittest.TestCase):
         x = self.simular()
         np.testing.assert_allclose(x['capital'], 1000.)
         np.testing.assert_allclose(x['hijo'], 0.)
+
+    def test_historial_corto_indica_cuantos_meses_hay(self):
+        fechas = pd.date_range('2025-01-31', periods=8, freq='ME')
+        precios = pd.DataFrame({'A': np.linspace(100., 108., 8)}, index=fechas)
+        with self.assertRaisesRegex(ValueError, 'Sólo hay 7 rendimientos mensuales'):
+            preparar_rendimientos(precios, pd.Timestamp('2025-09-01'))
 
     def test_divisa_solo_afecta_parte_us(self):
         fx = self.fx.copy(); fx[:, -1] = 22.
@@ -116,8 +123,8 @@ class TestProspectivo(unittest.TestCase):
         self.assertGreater(np.std(np.diff(x['capital'][0])), 0.)
 
     def test_seleccion_automatica_cumple_seis_correlaciones_negativas(self):
-        fechas = pd.bdate_range('2024-01-02', periods=301)
-        factor = .003 * np.sin(np.arange(300) * .17)
+        fechas = pd.bdate_range('2023-01-02', periods=651)
+        factor = .003 * np.sin(np.arange(650) * .17)
         r = np.column_stack([factor + .0001*i for i in range(3)]
                             + [-factor + .0001*i for i in range(2)])
         precios = pd.DataFrame(100*np.cumprod(np.vstack([np.ones(5), 1+r]), axis=0),
