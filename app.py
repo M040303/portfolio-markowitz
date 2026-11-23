@@ -402,6 +402,8 @@ with st.sidebar:
         st.subheader('Horizonte y capital')
         inicio = st.date_input('Inicio del histórico', value=date(2018,1,1))
         corte = st.date_input('Fecha de valoración', value=date.today())
+        completar_historico = st.checkbox('Ampliar histórico si faltan meses para Markowitz', value=True,
+            help='Si el rango elegido no alcanza 24 rendimientos mensuales, descarga datos desde tres años antes de la valoración. La fecha de valoración no cambia.')
         capital = st.number_input('Capital inicial (MXN)', min_value=1_000., value=1_000_000., step=50_000.)
         st.caption('La asignación EUA/México se calculará con Markowitz sobre los dos portafolios completos, expresados en MXN.')
         fr_riesgo = st.slider('Activos con riesgo dentro de cada país (%)', 0, 100, 70, 5) / 100
@@ -435,10 +437,14 @@ if ejecutar:
             todos = pool_us + pool_mx
         if not inicio < corte <= date.today():
             raise ValueError('El histórico debe iniciar antes de la valoración y ésta no puede ser futura.')
+        meses_potenciales = (corte.year - inicio.year) * 12 + corte.month - inicio.month - 1
+        inicio_efectivo = inicio
+        if completar_historico and meses_potenciales < 24:
+            inicio_efectivo = min(inicio, (pd.Timestamp(corte) - pd.DateOffset(years=3)).date())
         if not (rf_us_par[0] <= rf_us_par[1] <= rf_us_par[2] and rf_mx_par[0] <= rf_mx_par[1] <= rf_mx_par[2]):
             raise ValueError('En cada tasa debe cumplirse mínimo ≤ moda ≤ máximo.')
         with st.spinner('Descargando históricos y estimando el modelo USD/MXN…'):
-            precios_pool = descargar_precios(todos, inicio, corte,
+            precios_pool = descargar_precios(todos, inicio_efectivo, corte,
                                              estricto=modo_activos == 'Elegir manualmente')
             if modo_activos == 'Elegir automáticamente':
                 grupo_us_3, grupo_us_2, corr_us, info_us = seleccionar_activos_por_correlacion(
@@ -453,7 +459,7 @@ if ejecutar:
                     precios[list(us)], pd.Timestamp(corte), ventana_corr)
                 grupo_mx_3, grupo_mx_2, corr_mx, info_mx = seleccionar_activos_por_correlacion(
                     precios[list(mx)], pd.Timestamp(corte), ventana_corr)
-            fx_historico = descargar_dolar(inicio, corte)
+            fx_historico = descargar_dolar(inicio_efectivo, corte)
             retornos = preparar_rendimientos(precios, pd.Timestamp(corte))
             retornos_diarios = preparar_rendimientos_diarios(precios, pd.Timestamp(corte))
             if len(fx_historico) < 252:
@@ -481,6 +487,7 @@ if ejecutar:
             riesgo = estadisticas_riesgo(simul['capital'][:, -1], float(capital))
             esperados = rendimientos_esperados(simul, float(capital), fr_us)
         st.session_state['prospectivo'] = dict(us=us, mx=mx, retornos=retornos,
+            inicio_solicitado=inicio, inicio_efectivo=inicio_efectivo,
             modo_activos=modo_activos, grupo_us_3=grupo_us_3, grupo_us_2=grupo_us_2,
             ventana_corr=ventana_corr,
             grupo_mx_3=grupo_mx_3, grupo_mx_2=grupo_mx_2,
@@ -505,6 +512,8 @@ a = st.session_state['prospectivo']
 r = a['riesgo']
 e = a['esperados']
 st.success(f'{a["escenarios"]:,} escenarios de inversión · {a["corridas"]:,} corridas × {a["carteras"]:,} carteras por país')
+if a['inicio_efectivo'] < a['inicio_solicitado']:
+    st.info(f'Para estimar Markowitz se amplió el histórico: del inicio elegido {a["inicio_solicitado"]:%d/%m/%Y} al {a["inicio_efectivo"]:%d/%m/%Y}. La fecha de valoración permanece igual.')
 if a['parametros_fx'].alpha + a['parametros_fx'].beta >= .995:
     st.warning('El GARCH estimado tiene persistencia muy alta. A un año, las bandas pueden ser especialmente sensibles a los parámetros y a los choques extremos.')
 
