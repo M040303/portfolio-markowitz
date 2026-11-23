@@ -2,7 +2,7 @@
 import unittest
 import numpy as np
 import pandas as pd
-from prospectivo import (ParametrosFX, estadisticas_riesgo, optimizar_markowitz,
+from prospectivo import (ParametrosFX, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
                          rendimientos_esperados, simular_fx, simular_portafolio,
                          sortear_tasa)
 
@@ -91,7 +91,28 @@ class TestProspectivo(unittest.TestCase):
         r = estadisticas_riesgo(np.array([80.,90.,110.,120.]), 100.)
         self.assertAlmostEqual(r['prob_perdida'], .5)
         self.assertGreaterEqual(r['es95'], r['var95'])
+        self.assertAlmostEqual(r['var95_pct'], r['var95']/100.)
         np.testing.assert_allclose(sortear_tasa(3,.04,.04,.04,1), .04)
+
+    def test_markowitz_global_considera_conversion_del_dolar(self):
+        fechas = pd.bdate_range('2024-01-02', periods=301)
+        retornos = pd.DataFrame(0., index=fechas[1:], columns=self.columnas)
+        cambios = .001 + .0002*np.sin(np.arange(300))
+        fx = pd.Series(20*np.cumprod(np.r_[1., 1+cambios]), index=fechas)
+        asignacion, frontera = optimizar_asignacion_paises(
+            retornos, fx, self.pus, self.pmx, self.columnas[:2],
+            self.columnas[2:], 1., 0., .05)
+        self.assertGreater(asignacion['eua'], .99)
+        self.assertAlmostEqual(asignacion['eua'] + asignacion['mexico'], 1.)
+        self.assertEqual(len(frontera), 1001)
+
+    def test_bootstrap_diario_produce_rutas_diferentes(self):
+        r = self.r.copy()
+        r.iloc[::2, :2] = .02
+        r.iloc[1::2, :2] = -.01
+        x = self.simular(retornos=r, umbral_excedente=None)
+        self.assertFalse(np.allclose(x['capital'][0], x['capital'][1]))
+        self.assertGreater(np.std(np.diff(x['capital'][0])), 0.)
 
     def test_markowitz_pesos_validos(self):
         rng = np.random.default_rng(5)
