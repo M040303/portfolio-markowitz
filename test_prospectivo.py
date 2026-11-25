@@ -2,7 +2,7 @@
 import unittest
 import numpy as np
 import pandas as pd
-from prospectivo import (ParametrosFX, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
+from prospectivo import (ParametrosFX, bootstrap_rendimiento_global, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
                          preparar_rendimientos,
                          rendimientos_esperados, simular_fx, simular_portafolio,
                          seleccionar_activos_por_correlacion, sortear_tasa,
@@ -101,6 +101,21 @@ class TestProspectivo(unittest.TestCase):
         self.assertGreaterEqual(r['es95'], r['var95'])
         self.assertAlmostEqual(r['var95_pct'], r['var95']/100.)
         np.testing.assert_allclose(sortear_tasa(3,.04,.04,.04,1), .04)
+
+    def test_bootstrap_rendimiento_global_reproducible_y_en_porcentaje(self):
+        finales = np.array([80., 90., 100., 110., 120.])
+        tabla, replicas = bootstrap_rendimiento_global(finales, 100., 200, 42)
+        tabla_2, replicas_2 = bootstrap_rendimiento_global(finales, 100., 200, 42)
+        pd.testing.assert_frame_equal(tabla, tabla_2)
+        pd.testing.assert_frame_equal(replicas, replicas_2)
+        self.assertEqual(len(replicas), 200)
+        estimaciones = tabla.set_index('Métrica')['Estimación']
+        self.assertAlmostEqual(estimaciones['Media'], 0.)
+        self.assertAlmostEqual(estimaciones['Varianza'], 250.)
+        self.assertAlmostEqual(estimaciones['Cuantil 5%'], -18.)
+        self.assertAlmostEqual(estimaciones['Probabilidad de pérdida'], 40.)
+        self.assertLessEqual(tabla.loc[tabla['Métrica'] == 'Media', 'IC bootstrap 2.5%'].iloc[0], 0.)
+        self.assertGreaterEqual(tabla.loc[tabla['Métrica'] == 'Media', 'IC bootstrap 97.5%'].iloc[0], 0.)
 
     def test_markowitz_global_considera_conversion_del_dolar(self):
         fechas = pd.bdate_range('2024-01-02', periods=301)

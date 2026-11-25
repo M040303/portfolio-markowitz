@@ -424,6 +424,56 @@ def estadisticas_riesgo(capital_final: np.ndarray, capital_inicial: float) -> di
             'es95': max(0., float(perdida[perdida >= q95].mean()))}
 
 
+def bootstrap_rendimiento_global(
+    capital_final: np.ndarray, capital_inicial: float,
+    repeticiones: int, semilla: int, tamano_lote: int = 32,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Incertidumbre de estadísticos globales mediante bootstrap de rutas finales.
+
+    Cada réplica toma N rendimientos anuales simulados con reemplazo de los N
+    escenarios originales. El procesamiento por lotes evita una matriz B × N.
+    Los intervalos percentiles miden error Monte Carlo condicional al modelo;
+    las réplicas no son nuevas rutas económicas independientes.
+    """
+    finales = np.asarray(capital_final, dtype=float)
+    if (finales.ndim != 1 or len(finales) < 2 or not np.isfinite(finales).all()
+            or capital_inicial <= 0 or repeticiones < 100 or tamano_lote < 1):
+        raise ValueError('Revisa los capitales, el capital inicial y el número de remuestreos.')
+    rendimientos = finales / capital_inicial - 1
+    nombres = ['Media', 'Varianza', 'Desviación estándar', 'Mediana',
+               'Cuantil 5%', 'Cuantil 25%', 'Cuantil 75%', 'Cuantil 95%',
+               'Probabilidad de pérdida', 'VaR 95%', 'ES 95%']
+
+    def resumir(muestra: np.ndarray) -> np.ndarray:
+        # Una fila es una muestra bootstrap; las columnas son rutas anuales.
+        q05, q25, mediana, q75, q95 = np.quantile(
+            muestra, [.05, .25, .5, .75, .95], axis=1)
+        varianza = muestra.var(axis=1, ddof=1)
+        cola = muestra <= q05[:, None]
+        es = np.maximum(0., -np.divide((muestra * cola).sum(axis=1), cola.sum(axis=1)))
+        return np.column_stack((muestra.mean(axis=1), varianza, np.sqrt(varianza),
+                                mediana, q05, q25, q75, q95,
+                                (muestra < 0).mean(axis=1), np.maximum(0., -q05), es))
+
+    estimacion = resumir(rendimientos[None, :])[0]
+    replicadas = np.empty((repeticiones, len(nombres)), dtype=float)
+    rng = np.random.default_rng(semilla)
+    for inicio in range(0, repeticiones, tamano_lote):
+        fin = min(inicio + tamano_lote, repeticiones)
+        indices = rng.integers(0, len(rendimientos), size=(fin - inicio, len(rendimientos)))
+        replicadas[inicio:fin] = resumir(rendimientos[indices])
+    limites = np.quantile(replicadas, [.025, .975], axis=0)
+    escalas = np.array([10000. if nombre == 'Varianza' else 100. for nombre in nombres])
+    tabla = pd.DataFrame({'Métrica': nombres,
+                          'Estimación': estimacion * escalas,
+                          'IC bootstrap 2.5%': limites[0] * escalas,
+                          'IC bootstrap 97.5%': limites[1] * escalas,
+                          'Unidad': ['pp²' if nombre == 'Varianza' else '%' for nombre in nombres]})
+    replicas = pd.DataFrame(replicadas * escalas, columns=nombres)
+    replicas.insert(0, 'Remuestreo', np.arange(1, repeticiones + 1))
+    return tabla, replicas
+
+
 def rendimientos_esperados(simulacion: dict[str, np.ndarray], capital: float,
                            fraccion_us: float) -> dict[str, float | None]:
     """Retornos de país incluyen sus excedentes; los saldos graficados no se solapan.

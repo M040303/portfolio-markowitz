@@ -16,7 +16,7 @@ import streamlit as st
 import yfinance as yf
 
 from prospectivo import (
-    ajustar_fx_arma_garch, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
+    ajustar_fx_arma_garch, bootstrap_rendimiento_global, estadisticas_riesgo, optimizar_asignacion_paises, optimizar_markowitz,
     preparar_rendimientos, preparar_rendimientos_diarios, rendimientos_esperados, simular_fx,
     seleccionar_activos_por_correlacion, simular_portafolio, sortear_tasa,
     tabla_resumen_componentes,
@@ -369,6 +369,8 @@ def excel_descargable(analisis: dict) -> bytes:
         pd.DataFrame([analisis['asignacion_global']]).to_excel(writer, sheet_name='Asignacion_global', index=False)
         analisis['frontera_global'].to_excel(writer, sheet_name='Markowitz_global', index=False)
         escenarios.to_excel(writer, sheet_name='Escenarios', index=False)
+        analisis['tabla_bootstrap'].to_excel(writer, sheet_name='Bootstrap_resumen', index=False)
+        analisis['replicas_bootstrap'].to_excel(writer, sheet_name='Bootstrap_replicas', index=False)
         trayectorias.to_excel(writer, sheet_name='Bandas_diarias', index=False)
         analisis['ganadores_us'].to_excel(writer, sheet_name='Markowitz_EUA', index=False)
         analisis['ganadores_mx'].to_excel(writer, sheet_name='Markowitz_Mexico', index=False)
@@ -415,7 +417,9 @@ with st.sidebar:
         st.subheader('Simulación')
         corridas = st.number_input('Corridas Markowitz por país', 10, 1_000, 1_000, step=10)
         carteras = st.number_input('Carteras por corrida', 100, 5_000, 5_000, step=100)
-        escenarios = st.number_input('Escenarios prospectivos', 100, 20_000, 5_000, step=100)
+        escenarios = st.number_input('Escenarios prospectivos', 100, 20_000, 10_000, step=1_000)
+        remuestreos = st.number_input('Remuestreos bootstrap', 100, 20_000, 10_000, step=1_000,
+            help='Remuestrea los rendimientos finales de los escenarios para estimar la precisión de sus estadísticos.')
         semilla = st.number_input('Semilla', 0, 2_147_483_647, 20261119)
         aplicar_hijo = st.checkbox('Trasladar excedente mensual a cartera hija segura', value=True)
         umbral = st.number_input('Umbral mensual (%)', min_value=0., max_value=99., value=1.5, step=.1,
@@ -486,6 +490,9 @@ if ejecutar:
                                       umbral if aplicar_hijo else None)
             riesgo = estadisticas_riesgo(simul['capital'][:, -1], float(capital))
             esperados = rendimientos_esperados(simul, float(capital), fr_us)
+        with st.spinner('Calculando intervalos bootstrap del rendimiento global…'):
+            tabla_bootstrap, replicas_bootstrap = bootstrap_rendimiento_global(
+                simul['capital'][:, -1], float(capital), int(remuestreos), int(semilla)+9)
         st.session_state['prospectivo'] = dict(us=us, mx=mx, retornos=retornos,
             inicio_solicitado=inicio, inicio_efectivo=inicio_efectivo,
             modo_activos=modo_activos, grupo_us_3=grupo_us_3, grupo_us_2=grupo_us_2,
@@ -497,7 +504,8 @@ if ejecutar:
             asignacion_global=asignacion_global, frontera_global=frontera_global,
             parametros_fx=p_fx, spot=s0, fecha_base=fecha_base, fx=fx,
             rf_us=rf_us, rf_mx=rf_mx, simulacion=simul, riesgo=riesgo,
-            esperados=esperados,
+            esperados=esperados, tabla_bootstrap=tabla_bootstrap,
+            replicas_bootstrap=replicas_bootstrap, remuestreos=int(remuestreos),
             capital=float(capital), fr_us=fr_us, fr_riesgo=fr_riesgo,
             corridas=int(corridas), carteras=int(carteras), escenarios=int(escenarios),
             umbral=umbral if aplicar_hijo else None)
@@ -580,6 +588,20 @@ with resumen:
     st.write('**Rango final por escenarios**')
     st.dataframe(pd.DataFrame([{'Percentil 5':r['p05'], 'Mediana':r['mediana'], 'Media':r['media'], 'Percentil 95':r['p95']}]).style.format('${:,.0f}'), hide_index=True, width='stretch')
     st.caption('El VaR mostrado arriba mide el percentil 95 de la pérdida respecto del capital inicial, en porcentaje; el ES es la pérdida media del 5% peor, en MXN. Ambas cifras dependen del modelo y son pérdidas al cierre, no necesidades intermedias de liquidez.')
+    st.subheader('Bootstrap del rendimiento global')
+    st.caption(f'Se calcularon {a["escenarios"]:,} escenarios prospectivos y luego {a["remuestreos"]:,} remuestreos con reemplazo de sus rendimientos finales. La estimación describe los escenarios; el intervalo bootstrap del 95% muestra la precisión de cada estadístico dentro de este modelo, no un intervalo de rendimientos futuros.')
+    st.dataframe(a['tabla_bootstrap'].style.format({
+        'Estimación': '{:,.2f}', 'IC bootstrap 2.5%': '{:,.2f}',
+        'IC bootstrap 97.5%': '{:,.2f}'}), hide_index=True, width='stretch')
+    st.caption('Todas las cifras son porcentajes, excepto la varianza, expresada en puntos porcentuales al cuadrado (pp²). VaR y ES se muestran como pérdidas positivas cuando corresponde.')
+    figura_bootstrap = go.Figure(go.Histogram(x=a['replicas_bootstrap']['Media'], nbinsx=50,
+        marker_color='#245A81', name='Medias bootstrap'))
+    figura_bootstrap.add_vline(x=float(a['tabla_bootstrap'].loc[
+        a['tabla_bootstrap']['Métrica'] == 'Media', 'Estimación'].iloc[0]),
+        line_dash='dash', line_color='#CC5A37')
+    figura_bootstrap.update_layout(title='Precisión de la media del rendimiento global',
+        xaxis_title='Media anual estimada (%)', yaxis_title='Remuestreos', showlegend=False)
+    st.plotly_chart(figura_bootstrap, width='stretch')
 
 with markowitz:
     st.subheader('Correlaciones para elegir activos')
